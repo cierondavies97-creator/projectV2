@@ -240,6 +240,36 @@ stat_ts:
 
 
 
+vol_range:
+  table: "data/windows"
+  enabled: false
+  maturity: "stub"
+  description: "Volatility/range compression-expansion regime features (range z, state flags, and regime id/confidence)."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - vol_range_lookback_bars          # default 200
+    - vol_range_zscore_window_bars     # default 200
+    - vol_range_compress_z_cut         # default -1.0 (<= compress)
+    - vol_range_expand_z_cut           # default 1.0  (>= expand)
+    - vol_range_regime_conf_cut        # default 0.55
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    vol_range_lookback_bars:        { role: feature, dtype: int }
+    vol_range_realised_range:       { role: feature, dtype: double }
+    vol_range_range_z:              { role: feature, dtype: double }
+    vol_range_state:                { role: feature, dtype: string }  # compress|expand|neutral|unknown
+    vol_range_compress_flag:        { role: feature, dtype: boolean }
+    vol_range_expand_flag:          { role: feature, dtype: boolean }
+    vol_range_regime_id:            { role: feature, dtype: string }
+    vol_range_regime_confidence:    { role: feature, dtype: double }
+
+
+
 unsup_regime:
   table: "data/windows"
   enabled: false
