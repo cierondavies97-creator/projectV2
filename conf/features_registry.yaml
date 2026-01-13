@@ -22,19 +22,40 @@ ict_struct:
   table: "data/features"
   enabled: true
   maturity: "experimental"
-  threshold_keys:
-    # FVG / OB / BOS knobs (examples used by research.features_bayes)
-    - fvg_min_gap_ticks
-    - fvg_max_fill_bars
-    - ob_lookback_bars
-    - ob_height_ticks_min
-    - bos_window_bars_min
-    - bos_window_bars_max
-    # Vol bucket edges for ATR-z / regimes
-    - atr_z_low_high_cut
-    - atr_z_medium_high_cut
-  description: "ICT structure + liquidity flags (FVG/OB/BOS/CHoCH), with ATR-based volatility regime."
+  description: "ICT structure + liquidity flags (FVG/OB/BOS/CHoCH + EQH/EQL/liquidity grab) with ATR-based volatility regime."
   primary_key: [instrument, anchor_tf, ts]
+
+  threshold_keys:
+    # FVG
+    - fvg_min_gap_ticks           # default 8
+    - fvg_max_fill_bars           # default 6
+    - fvg_partial_fill_cut        # 0..1 fraction, default 0.5 (optional if you support partial fill)
+
+    # Order blocks
+    - ob_lookback_bars            # default 50
+    - ob_height_ticks_min         # default 8
+    - ob_mitigation_bars_max      # default 200 (freshness)
+
+    # BOS/CHoCH swing structure
+    - swing_lookback_bars         # default 20
+    - bos_window_bars_min         # default 2
+    - bos_window_bars_max         # default 8
+    - pd_index_bins               # JSON edges or int bins selector (for ict_struct_pd_index)
+
+    # Equal highs/lows + liquidity grabs
+    - eq_level_ticks_max          # default 3 (max distance between equal levels)
+    - eq_lookback_bars            # default 50
+    - liq_grab_wick_ratio_cut     # default 0.60 (wick/range)
+    - liq_grab_body_ratio_max     # default 0.30 (body/range)
+    - liq_grab_followthrough_bars # default 2 (confirm window)
+
+    # ATR + ATR-z regime
+    - atr_period                  # default 14
+    - atr_z_window_bars           # default 200
+    - atr_z_low_high_cut          # default 0.0.. (low->medium)
+    - atr_z_medium_high_cut       # default 1.0.. (medium->high)
+    - atr_z_clip_abs              # default 8.0
+
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
@@ -61,7 +82,7 @@ ict_struct:
     liq_grab_flag:        { role: feature, dtype: boolean }
     ict_struct_liquidity_tag: { role: feature, dtype: string } # legacy/freeform tag
 
-    # Swing anchors (kept for backward compatibility with early implementations)
+    # Swing anchors (back-compat)
     ict_struct_swing_high:    { role: feature, dtype: double }
     ict_struct_swing_low:     { role: feature, dtype: double }
     ict_struct_pd_index:      { role: feature, dtype: int }
@@ -70,6 +91,7 @@ ict_struct:
     atr_anchor:           { role: feature, dtype: double }
     atr_z:                { role: feature, dtype: double }
     vol_regime:           { role: feature, dtype: string }     # low|medium|high
+
 
 
 ta_trend:
@@ -180,61 +202,85 @@ pac_bar:
 stat_ts:
   table: "data/windows"
   enabled: true
-  maturity: "experimental"
-  threshold_keys: []
-  description: "Statistical time-series features (returns/vol/range + optional autocorr/seasonality), merged into windows."
+  maturity: "stable"
+  description: "Statistical time-series features on anchor candles aligned to windows: returns/vol/range with rolling z-scores and optional higher moments."
   primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - stat_ts_ret_window_bars          # default 20
+    - stat_ts_vol_window_bars          # default 20
+    - stat_ts_range_window_bars        # default 20
+    - stat_ts_zscore_window_bars       # default 200
+    - stat_ts_return_type              # "pct" | "log", default "pct"
+    - stat_ts_vol_type                 # "ret_std" | "atr", default "ret_std"
+    - stat_ts_min_periods_stats        # default 5
+    - stat_ts_enable_moments           # 0|1, default 1
+    - stat_ts_moments_window_bars      # default 100
+
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
     anchor_ts:  { role: key, dtype: timestamp }
 
-    stat_ts_return:        { role: feature, dtype: double }
-    stat_ts_vol:           { role: feature, dtype: double }
-    stat_ts_range:         { role: feature, dtype: double }
-    stat_ts_return_zscore: { role: feature, dtype: double }
-    stat_ts_vol_zscore:    { role: feature, dtype: double }
-    stat_ts_range_zscore:  { role: feature, dtype: double }
+    stat_ts_return:        { role: feature, dtype: double }   # 1-bar return at anchor_ts
+    stat_ts_vol:           { role: feature, dtype: double }   # rolling vol proxy at anchor_ts
+    stat_ts_range:         { role: feature, dtype: double }   # rolling mean(high-low) at anchor_ts
+    stat_ts_return_zscore: { role: feature, dtype: double }   # zscore(stat_ts_return) over zscore window
+    stat_ts_vol_zscore:    { role: feature, dtype: double }   # zscore(stat_ts_vol) over zscore window
+    stat_ts_range_zscore:  { role: feature, dtype: double }   # zscore(stat_ts_range) over zscore window
 
-    # Optional extended stats (nullable until implemented)
-    stat_ts_autocorr1:     { role: feature, dtype: double }
-    stat_ts_skew:          { role: feature, dtype: double }
-    stat_ts_kurtosis:      { role: feature, dtype: double }
+    stat_ts_autocorr1:     { role: feature, dtype: double }   # lag-1 autocorr of returns over moments window
+    stat_ts_skew:          { role: feature, dtype: double }   # skew of returns over moments window
+    stat_ts_kurtosis:      { role: feature, dtype: double }   # kurtosis of returns over moments window
+
 
 
 unsup_regime:
   table: "data/windows"
   enabled: false
   maturity: "stub"
-  threshold_keys:
-    - unsup_n_clusters
-    - unsup_min_confidence
-  description: "Unsupervised regime labels and confidence (clustered on windows/features)."
+  description: "Unsupervised regime labels and confidence for windows. Engine lane should only APPLY a pre-trained artifact (if provided), not fit clusters."
   primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - unsup_model_ref                 # string id/path for pretrained artifact (e.g., 'kmeans_v1')
+    - unsup_min_confidence            # default 0.55; gate for low-confidence -> null/unknown
+    - unsup_unknown_label             # default "unknown"
+
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
     anchor_ts:  { role: key, dtype: timestamp }
-    unsup_regime_id:         { role: feature, dtype: string }
-    unsup_regime_confidence: { role: feature, dtype: double }
+
+    unsup_regime_id:         { role: feature, dtype: string } # label or cluster id; "unknown" if below min_conf
+    unsup_regime_confidence: { role: feature, dtype: double } # 0..1
+
 
 
 carry_ts:
   table: "data/windows"
   enabled: false
   maturity: "stub"
-  threshold_keys:
-    - carry_slope_window_bars
-    - carry_regime_flat_cut
-  description: "Carry / term-structure proxies merged into windows."
+  description: "Carry/term-structure proxies merged into windows. Requires an external carry series per instrument (or a defined proxy)."
   primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - carry_source                     # "external" | "proxy", default "external"
+    - carry_slope_window_bars          # default 60
+    - carry_score_window_bars          # default 252
+    - carry_regime_flat_cut            # default 0.10  (abs(zscore) < cut -> flat)
+    - carry_regime_strong_cut          # default 1.00  (abs(zscore) >= strong -> strong contango/backwardation)
+    - carry_min_periods                # default 10
+
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
     anchor_ts:  { role: key, dtype: timestamp }
-    carry_ts_carry_score: { role: feature, dtype: double }
-    carry_ts_ts_slope:    { role: feature, dtype: double }
-    carry_ts_ts_regime:   { role: feature, dtype: string }  # backwardated|contango|flat
+
+    carry_ts_carry_score: { role: feature, dtype: double }  # zscore of slope or level (source dependent)
+    carry_ts_ts_slope:    { role: feature, dtype: double }  # slope of carry series over slope window
+    carry_ts_ts_regime:   { role: feature, dtype: string }  # backwardated|contango|flat|unknown
+
 
 
 # ------------------------------------------------------------------------
@@ -297,12 +343,22 @@ zmf_core:
 vp_core:
   table: "data/zones_state"
   enabled: true
-  maturity: "experimental"
-  threshold_keys:
-    - vp_hvn_lvn_ratio_cut
-    - vp_skew_abs_strong_cut
-  description: "Volume-profile primitives per zone (POC, skew, HVN/LVN flags, type)."
+  maturity: "stable"
+  description: "Volume-profile primitives per zone (POC, skew, HVN/LVN flags, type + bucket). Deterministic given volume-at-price inputs."
   primary_key: [instrument, anchor_tf, zone_id, ts]
+
+  threshold_keys:
+    # HVN/LVN discrimination (relative concentration)
+    - vp_hvn_lvn_ratio_cut                 # default 1.50  (upper/lower ratio or concentration ratio)
+    - vp_thin_total_volume_cut_units       # default 0.0   (optional; <= cut -> thin)
+
+    # Skew classification
+    - vp_skew_abs_strong_cut               # default 0.35  (abs(skew) >= strong -> skewed_high/low)
+
+    # POC position buckets (relative position 0..1)
+    - vp_poc_low_cut                       # default 0.33
+    - vp_poc_high_cut                      # default 0.67
+
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
@@ -311,24 +367,50 @@ vp_core:
 
     zone_vp_total_volume_units:        { role: feature, dtype: double }
     zone_vp_poc_price:                 { role: feature, dtype: double }
-    zone_vp_poc_relative_position:     { role: feature, dtype: double } # 0..1
+    zone_vp_poc_relative_position:     { role: feature, dtype: double } # 0..1 within zone [low,high]
     zone_vp_volume_lower_units:        { role: feature, dtype: double }
     zone_vp_volume_upper_units:        { role: feature, dtype: double }
-    zone_vp_skew:                      { role: feature, dtype: double }
+    zone_vp_skew:                      { role: feature, dtype: double } # (upper-lower)/total, [-1,1]
     zone_vp_hvn_flag:                  { role: feature, dtype: boolean }
     zone_vp_lvn_flag:                  { role: feature, dtype: boolean }
-    zone_vp_type:                      { role: feature, dtype: string }  # balanced_hvn|rejection_lvn|skewed_high|skewed_low|thin
-    zone_vp_type_bucket:               { role: feature, dtype: string }
+    zone_vp_type:                      { role: feature, dtype: string }  # balanced_hvn|rejection_lvn|skewed_high|skewed_low|thin|unknown
+    zone_vp_type_bucket:               { role: feature, dtype: string }  # hvn|lvn|skew_high|skew_low|thin|unknown
+
 
 
 ta_memory:
   table: "data/zones_state"
   enabled: false
   maturity: "stub"
-  threshold_keys: []
-  description: "TA memory features scoped to zones (e.g., prior RSI/EMA interactions)."
+  description: "TA memory features scoped to zones (prior RSI/EMA interactions, recency, and interaction counts)."
   primary_key: [instrument, anchor_tf, zone_id, ts]
-  columns: {}
+
+  threshold_keys:
+    - ta_memory_lookback_bars                 # default 200
+    - ta_memory_rsi_touch_cut                 # default 50.0 (generic threshold used for interactions)
+    - ta_memory_ema_touch_band_bps            # default 10.0 (distance band around EMA for 'touch')
+    - ta_memory_recency_half_life_bars        # default 50
+    - ta_memory_min_periods                   # default 10
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    zone_id:    { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    # Recency / interaction counts (zone-scoped)
+    ta_memory_bars_since_last_touch:          { role: feature, dtype: int }
+    ta_memory_touch_count_lookback:           { role: feature, dtype: int }
+    ta_memory_touch_recency_score:            { role: feature, dtype: double }  # exp(-age/half_life)
+
+    # RSI interactions (requires ta_trend RSI available for same tf)
+    ta_memory_rsi_last_value:                 { role: feature, dtype: double }
+    ta_memory_rsi_cross_count_lookback:       { role: feature, dtype: int }
+
+    # EMA interactions (requires ta_trend EMA fast/slow available)
+    ta_memory_ema_fast_touch_count_lookback:  { role: feature, dtype: int }
+    ta_memory_ema_slow_touch_count_lookback:  { role: feature, dtype: int }
+
 
 
 # ------------------------------------------------------------------------
