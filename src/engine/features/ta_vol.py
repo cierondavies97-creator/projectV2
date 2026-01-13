@@ -1,127 +1,186 @@
 from __future__ import annotations
 
-from typing import Mapping, Any
+import logging
 
 import polars as pl
 
-from engine.features._shared import (
-    require_cols,
-    ensure_sorted,
-    to_anchor_tf,
-    rolling_atr,
-    zscore,
-    bucket_by_edges,
-    safe_div,
-    conform_to_registry,
-)
+from engine.features import FeatureBuildContext
+
+log = logging.getLogger(__name__)
+
+
+def _empty_keyed_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "instrument": pl.Series([], dtype=pl.Utf8),
+            "anchor_tf": pl.Series([], dtype=pl.Utf8),
+            "ts": pl.Series([], dtype=pl.Datetime("us")),
+            "atr_value": pl.Series([], dtype=pl.Float64),
+            "ta_vol__atr": pl.Series([], dtype=pl.Float64),
+            "ta_vol__ret1_std": pl.Series([], dtype=pl.Float64),
+            "ta_vol__range_mean": pl.Series([], dtype=pl.Float64),
+        }
+    )
 
 
 def build_feature_frame(
     *,
-    ctx,
+    ctx: FeatureBuildContext,
     candles: pl.DataFrame,
-    family_cfg: Mapping[str, Any] | None = None,
-    registry_entry: Mapping[str, Any] | None = None,
     **_,
 ) -> pl.DataFrame:
     """
-    Family: ta_vol
+    Table: data/features
+    Keys : instrument, anchor_tf, ts
 
-    Target table:
-      - data/features
+    Outputs (must match features_registry.yaml ta_vol):
+      - atr_value
+      - ta_vol__atr
+      - ta_vol__ret1_std
+      - ta_vol__range_mean
 
-    Keys:
-      - instrument
-      - anchor_tf
-      - ts
-
-    Outputs (recommended canonical set):
-      - ta_vol__atr      : ATR(period) on anchor bars
-      - ta_vol__atr_z    : rolling z-score of atr_anchor
-      - ta_vol__vol_bucket : low/medium/high from atr_z
-
-    Notes:
-      - This implementation is causal (rolling windows only; no full-day stats).
-      - Keep all feature names stable; if you rename, update conf/features_registry.yaml.
+    Threshold keys (ONLY these are read from ctx.features_auto_cfg["ta_vol"]):
+      - atr_period
+      - atr_smoothing        ("wilder" | "sma")
+      - ret_window
+      - ret_type             ("pct" | "log")
+      - min_periods_atr
+      - min_periods_ret_std
+      - min_periods_range_mean
     """
     if candles is None or candles.is_empty():
-        return pl.DataFrame()
+        log.warning("ta_vol: candles empty; returning empty keyed frame")
+        return _empty_keyed_frame()
 
-    cfg = dict(family_cfg or {})
-    atr_period = int(cfg.get("atr_period", 14))
-    z_window = int(cfg.get("atr_z_window", 200))
-    ret_window = int(cfg.get("ret_window", 50))
-    vol_z_medium_high_cut = float(cfg.get("vol_z_medium_high_cut", 1.0))
-    vol_z_low_high_cut = float(cfg.get("vol_z_low_high_cut", 2.0))
-
-    require_cols(
-        candles,
-        ["instrument", "tf", "ts", "open", "high", "low", "close", "volume"],
-        where="ta_vol",
-    )
+    required = {"instrument", "tf", "ts", "open", "high", "low", "close"}
+    missing = sorted(required - set(candles.columns))
+    if missing:
+        log.warning("ta_vol: missing columns=%s; returning empty keyed frame", missing)
+        return _empty_keyed_frame()
 
     cluster = getattr(ctx, "cluster", None)
-    anchor_tfs = list(getattr(cluster, "anchor_tfs", []) or [])
+    anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
     if not anchor_tfs:
-        anchor_tfs = sorted(candles.get_column("tf").unique().to_list())
+        log.warning("ta_vol: ctx.cluster.anchor_tfs empty; returning empty keyed frame")
+        return _empty_keyed_frame()
+
+    auto_cfg = getattr(ctx, "features_auto_cfg", None) or {}
+    fam_cfg = dict(auto_cfg.get("ta_vol", {}) if isinstance(auto_cfg, dict) else {})
+
+    atr_period = max(1, int(fam_cfg.get("atr_period", 14)))
+    atr_smoothing = str(fam_cfg.get("atr_smoothing", "wilder")).strip().lower()
+    if atr_smoothing not in {"wilder", "sma"}:
+        atr_smoothing = "wilder"
+
+    ret_window = max(2, int(fam_cfg.get("ret_window", 20)))
+    ret_type = str(fam_cfg.get("ret_type", "pct")).strip().lower()
+    if ret_type not in {"pct", "log"}:
+        ret_type = "pct"
+
+    min_periods_atr = max(1, int(fam_cfg.get("min_periods_atr", 1)))
+    min_periods_ret_std = max(2, int(fam_cfg.get("min_periods_ret_std", 2)))
+    min_periods_range_mean = max(1, int(fam_cfg.get("min_periods_range_mean", 1)))
+
+    # Normalize inputs; dedupe (instrument, tf, ts) deterministically
+    c = (
+        candles.select(
+            pl.col("instrument").cast(pl.Utf8),
+            pl.col("tf").cast(pl.Utf8),
+            pl.col("ts").cast(pl.Datetime("us")),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+        )
+        .drop_nulls(["instrument", "tf", "ts"])
+        .sort(["instrument", "tf", "ts"])
+        .unique(subset=["instrument", "tf", "ts"], keep="last")
+    )
 
     out_frames: list[pl.DataFrame] = []
 
     for anchor_tf in anchor_tfs:
-        df = to_anchor_tf(candles, anchor_tf=str(anchor_tf), where="ta_vol")
+        tf_str = str(anchor_tf)
+        df = c.filter(pl.col("tf") == pl.lit(tf_str))
         if df.is_empty():
             continue
 
-        df = ensure_sorted(df, by=["instrument", "ts"])
+        df = df.sort(["instrument", "ts"]).with_columns(pl.lit(tf_str).alias("anchor_tf"))
 
-        # ATR + z-score regime
-        df = rolling_atr(df, group_cols=["instrument"], period=atr_period, out_col="ta_vol__atr", tr_col="_tr")
+        # True Range: max(high-low, abs(high-prev_close), abs(low-prev_close))
+        prev_close = pl.col("close").shift(1).over("instrument")
+        tr = pl.max_horizontal(
+            (pl.col("high") - pl.col("low")),
+            (pl.col("high") - prev_close).abs(),
+            (pl.col("low") - prev_close).abs(),
+        ).alias("_tr")
 
-        mean_atr = pl.col("ta_vol__atr").rolling_mean(z_window, min_periods=z_window).over("instrument")
-        std_atr = pl.col("ta_vol__atr").rolling_std(z_window, min_periods=z_window).over("instrument")
-        df = df.with_columns(zscore(pl.col("ta_vol__atr"), mean_expr=mean_atr, std_expr=std_atr).alias("ta_vol__atr_z"))
+        df = df.with_columns(tr)
+
+        # ATR
+        if atr_smoothing == "wilder":
+            # Wilder ATR is an RMA of TR, alpha=1/period
+            alpha = 1.0 / float(atr_period)
+            df = df.with_columns(
+                pl.col("_tr").ewm_mean(alpha=alpha, adjust=False).over("instrument").alias("atr_value")
+            )
+        else:
+            # Simple moving average of TR
+            df = df.with_columns(
+                pl.col("_tr")
+                .rolling_mean(window_size=atr_period, min_periods=min_periods_atr)
+                .over("instrument")
+                .alias("atr_value")
+            )
+
+        df = df.with_columns(pl.col("atr_value").alias("ta_vol__atr"))
+
+        # Returns + rolling std
+        if ret_type == "log":
+            ret1 = (pl.col("close").log() - pl.col("close").shift(1).log()).over("instrument").alias("_ret1")
+        else:
+            ret1 = pl.col("close").pct_change().over("instrument").alias("_ret1")
 
         df = df.with_columns(
-            bucket_by_edges(
-                pl.col("ta_vol__atr_z"),
-                edges=[vol_z_medium_high_cut, vol_z_low_high_cut],
-                labels=["low", "medium", "high"],
-                default="unknown",
-            ).alias("ta_vol__vol_bucket")
-        )
-
-        # Optional extra vol stats (useful for research; keep names namespaced)
-        df = df.with_columns(
-            safe_div(pl.col("close"), pl.col("close").shift(1), default=1.0).over("instrument").alias("_ratio"),
-        ).with_columns(
-            (pl.col("_ratio") - 1.0).alias("_ret1"),
+            ret1,
             (pl.col("high") - pl.col("low")).alias("_range"),
-        ).with_columns(
-            pl.col("_ret1").rolling_std(ret_window, min_periods=ret_window).over("instrument").alias("ta_vol__ret1_std"),
-            pl.col("_range").rolling_mean(ret_window, min_periods=ret_window).over("instrument").alias("ta_vol__range_mean"),
         )
 
-        out = df.select(
-            [
-                pl.col("instrument"),
-                pl.lit(str(anchor_tf)).alias("anchor_tf"),
-                pl.col("ts"),
-                pl.col("ta_vol__atr"),
-                pl.col("ta_vol__atr_z"),
-                pl.col("ta_vol__vol_bucket"),
-                pl.col("ta_vol__ret1_std"),
-                pl.col("ta_vol__range_mean"),
-            ]
+        df = df.with_columns(
+            pl.col("_ret1")
+            .rolling_std(window_size=ret_window, min_periods=min_periods_ret_std)
+            .over("instrument")
+            .alias("ta_vol__ret1_std"),
+            pl.col("_range")
+            .rolling_mean(window_size=ret_window, min_periods=min_periods_range_mean)
+            .over("instrument")
+            .alias("ta_vol__range_mean"),
         )
 
-        out = conform_to_registry(
-            out,
-            registry_entry=registry_entry,
-            key_cols=["instrument", "anchor_tf", "ts"],
-            where="ta_vol",
-            allow_extra=False,
+        out_frames.append(
+            df.select(
+                "instrument",
+                "anchor_tf",
+                "ts",
+                "atr_value",
+                "ta_vol__atr",
+                "ta_vol__ret1_std",
+                "ta_vol__range_mean",
+            )
         )
 
-        out_frames.append(out)
+    if not out_frames:
+        return _empty_keyed_frame()
 
-    return pl.concat(out_frames, how="vertical") if out_frames else pl.DataFrame()
+    out_all = pl.concat(out_frames, how="vertical").sort(["instrument", "anchor_tf", "ts"])
+
+    log.info(
+        "ta_vol: built rows=%d instruments=%d anchor_tfs=%d atr_period=%d atr_smoothing=%s ret_window=%d ret_type=%s",
+        out_all.height,
+        out_all.select("instrument").n_unique(),
+        out_all.select("anchor_tf").n_unique(),
+        atr_period,
+        atr_smoothing,
+        ret_window,
+        ret_type,
+    )
+    return out_all
