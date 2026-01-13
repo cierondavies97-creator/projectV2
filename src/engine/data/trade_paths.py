@@ -1,327 +1,241 @@
 from __future__ import annotations
 
-import os
-from datetime import date
-from pathlib import Path
-from typing import Optional
+import json
+import logging
+from typing import Any
 
 import polars as pl
 
-from engine.core.ids import RunContext
-from engine.core.schema import TRADE_PATHS_SCHEMA
-from engine.io.parquet_io import read_parquet_dir, write_parquet
-from engine.io.paths import trade_paths_dir
+from engine.features import FeatureBuildContext
 
-_SENTINEL = "∅"
-_TS = pl.Datetime("us")
+log = logging.getLogger(__name__)
 
 
-def _dtype_for_schema_type(t: str) -> pl.DataType:
-    t = (t or "").lower()
-    if t == "string":
-        return pl.Utf8
-    if t in ("int", "int64"):
-        return pl.Int64
-    if t in ("int32",):
-        return pl.Int32
-    if t in ("double", "float", "float64"):
-        return pl.Float64
-    if t == "boolean":
-        return pl.Boolean
-    if t == "timestamp":
-        return _TS
-    if t == "date":
-        return pl.Date
-    return pl.Utf8
+def _empty_keyed_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "trade_id": pl.Series([], dtype=pl.Utf8),
+            "path_shape": pl.Series([], dtype=pl.Utf8),
+            "path_cluster_id": pl.Series([], dtype=pl.Utf8),
+            "path_family_id": pl.Series([], dtype=pl.Utf8),
+            "path_filter_primary": pl.Series([], dtype=pl.Utf8),
+            "path_filter_tags_json": pl.Series([], dtype=pl.Utf8),
+            "time_to_1R_bars": pl.Series([], dtype=pl.Int64),
+            "time_to_2R_bars": pl.Series([], dtype=pl.Int64),
+            "mae_R": pl.Series([], dtype=pl.Float64),
+            "mae_R_bucket": pl.Series([], dtype=pl.Utf8),
+            "mfe_R": pl.Series([], dtype=pl.Float64),
+            "exit_reason": pl.Series([], dtype=pl.Utf8),
+        }
+    )
 
 
-def _is_eval_mode(df: pl.DataFrame) -> bool:
-    return df is not None and (not df.is_empty()) and ("paradigm_id" in df.columns)
-
-
-def _require_trade_identity(df: pl.DataFrame) -> None:
+def _parse_edges(edges_json: str | None) -> list[float]:
     """
-    Trade identity must be produced by the deterministic lane (steps). IO must not invent it.
+    Parse JSON array string of numeric edges for MAE bucketing.
+    Deterministic fallback if missing/invalid.
     """
-    missing = [c for c in ("instrument", "trade_id") if c not in df.columns]
-    if missing:
-        raise ValueError(f"trade_paths missing required identity columns (must be set by step logic): {missing}")
+    if not edges_json:
+        return [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+    try:
+        v = json.loads(edges_json)
+        if isinstance(v, list) and v:
+            out = sorted(float(x) for x in v)
+            return out
+    except Exception:
+        pass
+    return [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 
 
-def ensure_trade_paths_engine_cols(ctx: RunContext, df: pl.DataFrame, trading_day: date) -> pl.DataFrame:
+def _bucket_expr(x: pl.Expr, edges: list[float]) -> pl.Expr:
     """
-    Ensure trade_paths has all columns required by TRADE_PATHS_SCHEMA, with correct dtypes,
-    and with stable run identity columns.
-
-    Phase B policy:
-      - If paradigm_id exists, principle_id must exist.
-      - In eval-mode, candidate_id always exists (use sentinel if absent/null).
-      - experiment_id optional; if present, null -> sentinel.
-
-    Note:
-      - We add placeholder columns as typed NULLs.
-      - We do NOT create trade_id/instrument; those must already exist.
+    Bucket label strings like:
+      "<=0.25", "(0.25,0.5]", ..., ">2"
     """
-    if df is None or df.is_empty():
-        return pl.DataFrame()
-
-    _require_trade_identity(df)
-
-    out = df
-
-    # Stamp run identity (safe)
-    if "snapshot_id" not in out.columns:
-        out = out.with_columns(pl.lit(ctx.snapshot_id).cast(pl.Utf8).alias("snapshot_id"))
-    if "run_id" not in out.columns:
-        out = out.with_columns(pl.lit(ctx.run_id).cast(pl.Utf8).alias("run_id"))
-    if "mode" not in out.columns:
-        out = out.with_columns(pl.lit(ctx.mode).cast(pl.Utf8).alias("mode"))
-
-    # dt is required and should be a Date
-    if "dt" not in out.columns:
-        out = out.with_columns(pl.lit(trading_day).cast(pl.Date).alias("dt"))
-    else:
-        out = out.with_columns(pl.col("dt").cast(pl.Date, strict=False).alias("dt"))
-
-    # Enforce Phase B eval identity constraints if present
-    if "paradigm_id" in out.columns:
-        if "principle_id" not in out.columns:
-            raise ValueError("trade_paths has paradigm_id but is missing principle_id (Phase B requires both).")
-        if "candidate_id" not in out.columns:
-            out = out.with_columns(pl.lit(_SENTINEL).cast(pl.Utf8).alias("candidate_id"))
-
-    # Normalize candidate_id / experiment_id if present
-    if "candidate_id" in out.columns:
-        out = out.with_columns(pl.col("candidate_id").cast(pl.Utf8, strict=False).fill_null(_SENTINEL).alias("candidate_id"))
-    if "experiment_id" in out.columns:
-        out = out.with_columns(pl.col("experiment_id").cast(pl.Utf8, strict=False).fill_null(_SENTINEL).alias("experiment_id"))
-
-    # Key dtype normalization
-    cast_exprs: list[pl.Expr] = []
-    for k in ("run_id", "instrument", "paradigm_id", "principle_id", "candidate_id", "experiment_id", "trade_id"):
-        if k in out.columns:
-            cast_exprs.append(pl.col(k).cast(pl.Utf8, strict=False).alias(k))
-    if "entry_ts" in out.columns:
-        cast_exprs.append(pl.col("entry_ts").cast(_TS, strict=False).alias("entry_ts"))
-    if "exit_ts" in out.columns:
-        cast_exprs.append(pl.col("exit_ts").cast(_TS, strict=False).alias("exit_ts"))
-    if cast_exprs:
-        out = out.with_columns(cast_exprs)
-
-    # Add any missing schema columns as typed NULLs (or stable JSON default)
-    cols = set(out.columns)
-    add_exprs: list[pl.Expr] = []
-
-    for name, typ in TRADE_PATHS_SCHEMA.columns.items():
-        if name in cols:
-            # Cast to expected type when possible (strict=False to avoid hard failures during transition)
-            add_exprs.append(pl.col(name).cast(_dtype_for_schema_type(typ), strict=False).alias(name))
-            continue
-
-        dtype = _dtype_for_schema_type(typ)
-        if name == "dt":
-            add_exprs.append(pl.lit(trading_day).cast(pl.Date).alias(name))
-        elif name in ("snapshot_id", "run_id", "mode"):
-            # already added above, but keep deterministic if schema demands it
-            if name == "snapshot_id":
-                add_exprs.append(pl.lit(ctx.snapshot_id).cast(pl.Utf8).alias(name))
-            elif name == "run_id":
-                add_exprs.append(pl.lit(ctx.run_id).cast(pl.Utf8).alias(name))
-            else:
-                add_exprs.append(pl.lit(ctx.mode).cast(pl.Utf8).alias(name))
+    expr = pl.when(x.is_null()).then(pl.lit(None, dtype=pl.Utf8))
+    lo = None
+    for e in edges:
+        if lo is None:
+            expr = expr.when(x <= pl.lit(e)).then(pl.lit(f"<= {e:g}"))
         else:
-            add_exprs.append(pl.lit(None).cast(dtype).alias(name))
-
-    if add_exprs:
-        out = out.with_columns(add_exprs)
-
-    # Final: strict day scoping (do not write off-day rows)
-    if "entry_ts" in out.columns:
-        out = out.filter(pl.col("entry_ts").dt.date() == pl.lit(trading_day))
-
-    # Deterministic de-dupe on trade identity (and eval identity when present)
-    key_cols = ["instrument", "dt", "trade_id"]
-    if _is_eval_mode(out):
-        key_cols += ["paradigm_id", "principle_id", "candidate_id"]
-        if "experiment_id" in out.columns:
-            key_cols.append("experiment_id")
-
-    out = out.sort(key_cols).unique(subset=key_cols, keep="first")
-
-    return out
+            expr = expr.when((x > pl.lit(lo)) & (x <= pl.lit(e))).then(pl.lit(f"({lo:g},{e:g}]"))
+        lo = e
+    return expr.otherwise(pl.lit(f"> {edges[-1]:g}"))
 
 
-def validate_trade_paths_frame(df: pl.DataFrame) -> None:
-    """
-    Validate trade_paths frames before writing.
-
-    Enforces:
-      1) All required columns exist (per TRADE_PATHS_SCHEMA).
-      2) Partition keys stable dtypes: run_id Utf8, instrument Utf8, dt Date.
-      3) dt non-null.
-      4) Phase B sanity: paradigm_id implies principle_id.
-    """
-    if df is None or df.is_empty():
-        return
-
-    missing = [c for c in TRADE_PATHS_SCHEMA.columns.keys() if c not in df.columns]
-    if missing:
-        raise ValueError(f"Trade paths frame missing required columns: {missing}")
-
-    schema = df.schema
-    expected = {"run_id": pl.Utf8, "instrument": pl.Utf8, "dt": pl.Date}
-    for col, dt in expected.items():
-        got = schema.get(col)
-        if got != dt:
-            raise ValueError(f"trade_paths.{col} dtype mismatch: expected={dt} got={got}")
-
-    if df.select(pl.col("dt").is_null().any()).item():
-        raise ValueError("trade_paths.dt contains null values")
-
-    if "paradigm_id" in df.columns and "principle_id" not in df.columns:
-        raise ValueError("trade_paths has paradigm_id but is missing principle_id (Phase B requires both).")
+def _col_or_null(df: pl.DataFrame, name: str, dtype: pl.DataType) -> pl.Expr:
+    return pl.col(name).cast(dtype, strict=False) if name in df.columns else pl.lit(None, dtype=dtype)
 
 
-def write_trade_paths_for_day(
-    ctx: RunContext,
-    df: pl.DataFrame,
-    instrument: str,
-    trading_day: date,
+def build_feature_frame(
     *,
-    sandbox: bool = False,
-) -> Path:
+    ctx: FeatureBuildContext,
+    trade_paths: pl.DataFrame | None = None,
+    **_,
+) -> pl.DataFrame:
     """
-    Write trade path rows for a given instrument and trading_day.
+    Table: data/trade_paths
+    Keys : trade_id
 
-    Backward compatible:
-      - If df lacks paradigm_id -> Phase A layout.
-      - If df has paradigm_id + principle_id -> evaluation-aware Phase B layout.
+    Threshold keys (ONLY these are read from ctx.features_auto_cfg["trade_path_class"]):
+      - path_cluster_n_clusters
+      - path_shape_time_to_1R_bars_max
+      - path_mae_R_bucket_edges_json
 
-    Writes:
-      - One parquet file per (instrument, eval identity group) at 0000.parquet.
+    Engine-lane determinism:
+      - No clustering is computed here. If upstream provides path_cluster_id, we pass it through.
+      - Shapes/filters are deterministic heuristics from existing diagnostics.
     """
-    # Return the legacy (non-eval) path as a conventional "base" even in Phase B.
-    base_dir = trade_paths_dir(ctx, trading_day, instrument, sandbox=sandbox)
+    if trade_paths is None or trade_paths.is_empty():
+        log.warning("trade_path_class: trade_paths empty; returning empty keyed frame")
+        return _empty_keyed_frame()
 
-    if df is None or df.is_empty():
-        return base_dir
+    if "trade_id" not in trade_paths.columns:
+        log.warning("trade_path_class: missing trade_id; returning empty keyed frame")
+        return _empty_keyed_frame()
 
-    df2 = ensure_trade_paths_engine_cols(ctx, df, trading_day)
-    validate_trade_paths_frame(df2)
+    auto_cfg = getattr(ctx, "features_auto_cfg", None) or {}
+    fam_cfg: dict[str, Any] = dict(auto_cfg.get("trade_path_class", {}) if isinstance(auto_cfg, dict) else {})
 
-    eval_mode = ("paradigm_id" in df2.columns) and ("principle_id" in df2.columns)
+    # registry-governed knobs
+    n_clusters_cfg = int(fam_cfg.get("path_cluster_n_clusters", 0))  # not used for clustering in-engine
+    t1_max = int(fam_cfg.get("path_shape_time_to_1R_bars_max", 12))
+    edges = _parse_edges(fam_cfg.get("path_mae_R_bucket_edges_json"))
 
-    group_cols = ["instrument"]
-    if eval_mode:
-        group_cols += ["paradigm_id", "principle_id", "candidate_id"]
-        if "experiment_id" in df2.columns:
-            group_cols.append("experiment_id")
+    # Normalize + dedupe deterministically
+    src = (
+        trade_paths.select([pl.all()])
+        .with_columns(pl.col("trade_id").cast(pl.Utf8))
+        .drop_nulls(["trade_id"])
+        .unique(subset=["trade_id"], keep="last")
+    )
 
-    for g in df2.partition_by(group_cols, maintain_order=True):
-        if g.is_empty():
-            continue
+    # Optional diagnostics (pass-through if already computed upstream)
+    t1 = _col_or_null(src, "time_to_1R_bars", pl.Int64).alias("time_to_1R_bars")
+    t2 = _col_or_null(src, "time_to_2R_bars", pl.Int64).alias("time_to_2R_bars")
+    mae = _col_or_null(src, "mae_R", pl.Float64).alias("mae_R")
+    mfe = _col_or_null(src, "mfe_R", pl.Float64).alias("mfe_R")
+    exit_reason = _col_or_null(src, "exit_reason", pl.Utf8).alias("exit_reason")
 
-        inst = str(g["instrument"][0])
+    # Cluster id (pass-through only; remains null until research/backfill)
+    path_cluster_id = _col_or_null(src, "path_cluster_id", pl.Utf8).alias("path_cluster_id")
 
-        paradigm_id: Optional[str] = None
-        principle_id: Optional[str] = None
-        candidate_id: Optional[str] = None
-        experiment_id: Optional[str] = None
+    # Buckets
+    mae_bucket = _bucket_expr(pl.col("mae_R"), edges).alias("mae_R_bucket")
 
-        if eval_mode:
-            paradigm_id = str(g["paradigm_id"][0])
-            principle_id = str(g["principle_id"][0])
-            candidate_id = str(g["candidate_id"][0]) if "candidate_id" in g.columns else _SENTINEL
-            if "experiment_id" in g.columns:
-                experiment_id = str(g["experiment_id"][0])
-
-        out_dir = trade_paths_dir(
-            ctx=ctx,
-            trading_day=trading_day,
-            instrument=inst,
-            paradigm_id=paradigm_id,
-            principle_id=principle_id,
-            candidate_id=candidate_id,
-            experiment_id=experiment_id,
-            sandbox=sandbox,
+    # Deterministic shape heuristics (uses only available diagnostics)
+    # Labels are constrained to the set you documented in the registry comment.
+    path_shape = (
+        pl.when(pl.col("time_to_1R_bars").is_null() & pl.col("mfe_R").is_null() & pl.col("mae_R").is_null())
+        .then(pl.lit("unknown"))
+        .when(
+            (pl.col("time_to_1R_bars").is_not_null())
+            & (pl.col("time_to_1R_bars") <= pl.lit(t1_max))
+            & (pl.col("mfe_R").is_not_null())
+            & (pl.col("mfe_R") >= pl.lit(2.0))
+            & (pl.col("mae_R").is_not_null())
+            & (pl.col("mae_R") <= pl.lit(0.5))
         )
-        out_dir.mkdir(parents=True, exist_ok=True)
-        write_parquet(g, out_dir, file_name="0000.parquet")
-
-    return base_dir
-
-
-def read_trade_paths_for_day(
-    ctx: RunContext,
-    instrument: str,
-    trading_day: date,
-    *,
-    paradigm_id: Optional[str] = None,
-    principle_id: Optional[str] = None,
-    candidate_id: Optional[str] = None,
-    experiment_id: Optional[str] = None,
-    sandbox: bool = False,
-) -> pl.DataFrame:
-    """
-    Read trade paths for a given instrument and trading_day, optionally scoped to evaluation identity.
-
-    Returns empty DataFrame if no directory exists.
-    """
-    dir_path = trade_paths_dir(
-        ctx=ctx,
-        trading_day=trading_day,
-        instrument=instrument,
-        paradigm_id=paradigm_id,
-        principle_id=principle_id,
-        candidate_id=candidate_id,
-        experiment_id=experiment_id,
-        sandbox=sandbox,
-    )
-    if not os.path.isdir(dir_path):
-        return pl.DataFrame()
-    return read_parquet_dir(dir_path)
-
-
-def read_trade_paths_for_day_any(
-    ctx: RunContext,
-    instrument: str,
-    trading_day: date,
-    *,
-    sandbox: bool = False,
-) -> pl.DataFrame:
-    """
-    Read trade_paths for (instrument, trading_day) across BOTH layouts:
-
-      - Phase A: data/trade_paths/run_id=.../instrument=.../dt=...
-      - Phase B: data/trade_paths/run_id=.../paradigm_id=.../principle_id=.../candidate_id=.../(experiment_id=...)/
-                 instrument=.../dt=...
-
-    Intended for research tooling / audits, not deterministic execution.
-    """
-    legacy_dir = trade_paths_dir(
-        ctx=ctx,
-        trading_day=trading_day,
-        instrument=instrument,
-        paradigm_id=None,
-        sandbox=sandbox,
+        .then(pl.lit("straight_runner"))
+        .when(
+            (pl.col("mfe_R").is_not_null())
+            & (pl.col("mfe_R") >= pl.lit(2.0))
+            & (pl.col("mae_R").is_not_null())
+            & (pl.col("mae_R") > pl.lit(0.5))
+        )
+        .then(pl.lit("dip_then_go"))
+        .when(
+            (pl.col("time_to_1R_bars").is_not_null())
+            & (pl.col("time_to_1R_bars") > pl.lit(t1_max))
+            & (pl.col("mfe_R").is_not_null())
+            & (pl.col("mfe_R") >= pl.lit(1.5))
+        )
+        .then(pl.lit("grind_then_go"))
+        .when(
+            (pl.col("mfe_R").is_not_null())
+            & (pl.col("mfe_R") < pl.lit(1.0))
+            & (pl.col("mae_R").is_not_null())
+            & (pl.col("mae_R") >= pl.lit(1.0))
+        )
+        .then(pl.lit("straight_fail"))
+        .when(
+            (pl.col("time_to_1R_bars").is_not_null())
+            & (pl.col("time_to_1R_bars") > pl.lit(t1_max))
+            & (pl.col("mfe_R").is_not_null())
+            & (pl.col("mfe_R") < pl.lit(1.0))
+        )
+        .then(pl.lit("chop_and_die"))
+        .otherwise(pl.lit("unknown"))
+        .alias("path_shape")
     )
 
-    frames: list[pl.DataFrame] = []
-    if os.path.isdir(legacy_dir):
-        frames.append(read_parquet_dir(legacy_dir))
+    # Coarse family label (stable mapping)
+    path_family_id = (
+        pl.when(pl.col("path_shape").is_in(["straight_runner", "dip_then_go", "grind_then_go"]))
+        .then(pl.lit("winners"))
+        .when(pl.col("path_shape").is_in(["straight_fail", "chop_and_die"]))
+        .then(pl.lit("losers"))
+        .otherwise(pl.lit("unknown"))
+        .alias("path_family_id")
+    )
 
-    root = legacy_dir.parents[1]  # .../trade_paths/run_id=<RUN_ID>
-    if os.path.isdir(root):
-        tail = f"instrument={instrument}{os.sep}dt={trading_day.strftime('%Y-%m-%d')}"
-        for dirpath, _dirnames, _filenames in os.walk(root):
-            if dirpath.endswith(tail):
-                try:
-                    frames.append(read_parquet_dir(Path(dirpath)))
-                except FileNotFoundError:
-                    pass
+    # Primary filter (one canonical tag)
+    path_filter_primary = (
+        pl.when(pl.col("path_shape") == "straight_runner").then(pl.lit("fast_winner"))
+        .when(pl.col("path_shape") == "dip_then_go").then(pl.lit("drawdown_then_win"))
+        .when(pl.col("path_shape") == "grind_then_go").then(pl.lit("slow_winner"))
+        .when(pl.col("path_shape") == "straight_fail").then(pl.lit("fast_loser"))
+        .when(pl.col("path_shape") == "chop_and_die").then(pl.lit("chop_loser"))
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
+        .alias("path_filter_primary")
+    )
 
-    if not frames:
-        return pl.DataFrame()
-    if len(frames) == 1:
-        return frames[0]
-    return pl.concat(frames, how="diagonal")
+    # Tag list -> JSON array string (deterministic, minimal)
+    tags_list = pl.concat_list(
+        [
+            pl.when(pl.col("path_shape") == "straight_runner").then(pl.lit("fast_winner")).otherwise(pl.lit(None)),
+            pl.when(pl.col("path_shape") == "dip_then_go").then(pl.lit("drawdown_then_win")).otherwise(pl.lit(None)),
+            pl.when(pl.col("path_shape") == "grind_then_go").then(pl.lit("slow_winner")).otherwise(pl.lit(None)),
+            pl.when(pl.col("path_shape") == "straight_fail").then(pl.lit("fast_loser")).otherwise(pl.lit(None)),
+            pl.when(pl.col("path_shape") == "chop_and_die").then(pl.lit("chop_loser")).otherwise(pl.lit(None)),
+            pl.when(pl.col("mae_R").is_not_null() & (pl.col("mae_R") >= pl.lit(1.0))).then(pl.lit("deep_mae")).otherwise(pl.lit(None)),
+            pl.when(pl.col("mfe_R").is_not_null() & (pl.col("mfe_R") >= pl.lit(2.0))).then(pl.lit("high_mfe")).otherwise(pl.lit(None)),
+        ]
+    ).list.drop_nulls()
+
+    # Encode as a JSON array string without non-deterministic ordering
+    joined = tags_list.list.join(pl.lit('","')).alias("_tags_joined")
+    path_filter_tags_json = (
+        pl.when(joined.is_null() | (joined == pl.lit("")))
+        .then(pl.lit("[]"))
+        .otherwise(pl.lit('["') + joined + pl.lit('"]'))
+        .alias("path_filter_tags_json")
+    )
+
+    out = (
+        src.select(pl.col("trade_id").cast(pl.Utf8))
+        .with_columns(
+            t1,
+            t2,
+            mae,
+            mfe,
+            exit_reason,
+            path_cluster_id,
+        )
+        .with_columns(
+            mae_bucket,
+            path_shape,
+            path_family_id,
+            path_filter_primary,
+            path_filter_tags_json,
+        )
+        .select(_empty_keyed_frame().columns)
+    )
+
+    log.info(
+        "trade_path_class: built rows=%d shapes=%s (cluster_n_cfg=%d; clustering is not computed in-engine)",
+        out.height,
+        out.select("path_shape").unique().to_series().to_list(),
+        n_clusters_cfg,
+    )
+    return out
