@@ -271,6 +271,14 @@ WINDOWS_SCHEMA = TableSchema(
         'stat_ts_vol': 'double',
         'stat_ts_vol_zscore': 'double',
         'unsup_regime_confidence': 'double',
+        'vol_range_compress_flag': 'boolean',
+        'vol_range_expand_flag': 'boolean',
+        'vol_range_lookback_bars': 'int',
+        'vol_range_range_z': 'double',
+        'vol_range_realised_range': 'double',
+        'vol_range_regime_confidence': 'double',
+        'vol_range_regime_id': 'string',
+        'vol_range_state': 'string',
     },
 )
 
@@ -895,5 +903,4 @@ def enforce_table(
     reorder: bool = False,
 ) -> pl.DataFrame:
     return enforce_schema(df, get_table_schema(key), allow_extra=allow_extra, reorder=reorder)
-
 
