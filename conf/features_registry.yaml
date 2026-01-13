@@ -119,24 +119,49 @@ ta_vol:
 pac_bar:
   table: "data/windows"
   enabled: true
-  maturity: "experimental"
-  threshold_keys:
-    - impulse_threshold
-  description: "Price Action Context (PAC) micro-state around anchor bars; merged into windows/trade paths."
+  maturity: "stable"
+  description: "Price Action Context (PAC) micro-state around anchor bars; rejection/followthrough and simple regime classification around anchor."
   primary_key: [instrument, anchor_tf, anchor_ts]
+
+  # Threshold keys are the ONLY knobs trainers are allowed to tune.
+  # These map directly to the pac_bar implementation logic.
+  threshold_keys:
+    # Rejection heuristic (wick/body)
+    - impulse_threshold                 # default 0.65; wick_ratio >= impulse_threshold triggers rejection candidate
+    - rejection_body_ratio_max          # default 0.25; body_ratio <= this confirms rejection
+
+    # Start/mid/end offsets (bar index offsets around anchor)
+    - start_offset_bars                 # default -2
+    - mid_offset_bars                   # default -1
+    - end_offset_bars                   # default +1
+
+    # Regime window + regime cutoffs
+    - regime_half_window_bars           # default 5 (window size = 2*half + 1)
+    - regime_flat_body_ratio_max        # default 0.10
+    - regime_impulsive_body_ratio_min   # default 0.25
+    - regime_trend_body_ratio_min       # default 0.35
+    - regime_trend_wick_ratio_max       # default 0.35
+
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
     anchor_ts:  { role: key, dtype: timestamp }
-    pac_micro_state_anchor:    { role: feature, dtype: string }
-    pac_micro_state_pre_entry: { role: feature, dtype: string }
+
+    # Micro-state classifications (bull|bear|doji|na)
+    pac_micro_state_anchor:     { role: feature, dtype: string }
+    pac_micro_state_pre_entry:  { role: feature, dtype: string }
     pac_micro_state_post_entry: { role: feature, dtype: string }
-    pac_micro_state_start:     { role: feature, dtype: string }
-    pac_micro_state_mid:       { role: feature, dtype: string }
-    pac_micro_state_end:       { role: feature, dtype: string }
-    pac_path_regime:           { role: feature, dtype: string }
-    pac_entry_immediate_rejection_flag:    { role: feature, dtype: boolean }
-    pac_entry_immediate_followthrough_flag: { role: feature, dtype: boolean }
+    pac_micro_state_start:      { role: feature, dtype: string }
+    pac_micro_state_mid:        { role: feature, dtype: string }
+    pac_micro_state_end:        { role: feature, dtype: string }
+
+    # Simple regime label derived from a symmetric bar window around anchor
+    # ("flat"|"impulsive"|"trend"|"chop"|"unknown")
+    pac_path_regime: { role: feature, dtype: string }
+
+    # Anchor event flags
+    pac_entry_immediate_rejection_flag:      { role: feature, dtype: boolean }
+    pac_entry_immediate_followthrough_flag:  { role: feature, dtype: boolean }
 
 
 stat_ts:
