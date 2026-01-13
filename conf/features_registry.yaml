@@ -203,35 +203,40 @@ stat_ts:
   table: "data/windows"
   enabled: true
   maturity: "stable"
-  description: "Statistical time-series features on anchor candles aligned to windows: returns/vol/range with rolling z-scores and optional higher moments."
+  description: "Statistical time-series window features on anchor_ts: return/vol/range + robust z-scores + optional higher moments/autocorr."
   primary_key: [instrument, anchor_tf, anchor_ts]
 
+  # Trainers may tune ONLY these knobs (research.features_bayes).
   threshold_keys:
-    - stat_ts_ret_window_bars          # default 20
-    - stat_ts_vol_window_bars          # default 20
-    - stat_ts_range_window_bars        # default 20
-    - stat_ts_zscore_window_bars       # default 200
-    - stat_ts_return_type              # "pct" | "log", default "pct"
-    - stat_ts_vol_type                 # "ret_std" | "atr", default "ret_std"
-    - stat_ts_min_periods_stats        # default 5
-    - stat_ts_enable_moments           # 0|1, default 1
-    - stat_ts_moments_window_bars      # default 100
+    - stat_ts_ret_type              # "pct" | "log", default "pct"
+    - stat_ts_return_window_bars    # default 1
+    - stat_ts_vol_window_bars       # default 20
+    - stat_ts_range_window_bars     # default 20
+    - stat_ts_zscore_window_bars    # default 200
+    - stat_ts_min_periods_return    # default 1
+    - stat_ts_min_periods_vol       # default 2
+    - stat_ts_min_periods_range     # default 1
+    - stat_ts_zscore_clip_abs       # default 8.0 (winsorize)
+    - stat_ts_use_robust_zscore     # true|false, default true (median/MAD vs mean/std)
+    - stat_ts_autocorr1_window_bars # default 200 (only if autocorr enabled)
+    - stat_ts_moments_window_bars   # default 200 (skew/kurtosis)
 
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
     anchor_ts:  { role: key, dtype: timestamp }
 
-    stat_ts_return:        { role: feature, dtype: double }   # 1-bar return at anchor_ts
-    stat_ts_vol:           { role: feature, dtype: double }   # rolling vol proxy at anchor_ts
-    stat_ts_range:         { role: feature, dtype: double }   # rolling mean(high-low) at anchor_ts
-    stat_ts_return_zscore: { role: feature, dtype: double }   # zscore(stat_ts_return) over zscore window
-    stat_ts_vol_zscore:    { role: feature, dtype: double }   # zscore(stat_ts_vol) over zscore window
-    stat_ts_range_zscore:  { role: feature, dtype: double }   # zscore(stat_ts_range) over zscore window
+    stat_ts_return:        { role: feature, dtype: double }  # 1-bar return on anchor bars (ret_type)
+    stat_ts_vol:           { role: feature, dtype: double }  # rolling std of returns (vol_window)
+    stat_ts_range:         { role: feature, dtype: double }  # rolling mean of (high-low) (range_window)
+    stat_ts_return_zscore: { role: feature, dtype: double }  # z-score over zscore_window (robust optional)
+    stat_ts_vol_zscore:    { role: feature, dtype: double }
+    stat_ts_range_zscore:  { role: feature, dtype: double }
 
-    stat_ts_autocorr1:     { role: feature, dtype: double }   # lag-1 autocorr of returns over moments window
-    stat_ts_skew:          { role: feature, dtype: double }   # skew of returns over moments window
-    stat_ts_kurtosis:      { role: feature, dtype: double }   # kurtosis of returns over moments window
+    # Optional extended stats (nullable until enabled by implementation)
+    stat_ts_autocorr1:     { role: feature, dtype: double }  # lag-1 autocorr of returns
+    stat_ts_skew:          { role: feature, dtype: double }  # rolling skew of returns
+    stat_ts_kurtosis:      { role: feature, dtype: double }  # rolling kurtosis of returns
 
 
 
@@ -239,21 +244,23 @@ unsup_regime:
   table: "data/windows"
   enabled: false
   maturity: "stub"
-  description: "Unsupervised regime labels and confidence for windows. Engine lane should only APPLY a pre-trained artifact (if provided), not fit clusters."
+  description: "Unsupervised regime labels and confidence, clustered on windows/context features."
   primary_key: [instrument, anchor_tf, anchor_ts]
 
   threshold_keys:
-    - unsup_model_ref                 # string id/path for pretrained artifact (e.g., 'kmeans_v1')
-    - unsup_min_confidence            # default 0.55; gate for low-confidence -> null/unknown
-    - unsup_unknown_label             # default "unknown"
+    - unsup_method           # "kmeans" | "gmm" | "hdbscan" (if supported), default "kmeans"
+    - unsup_n_clusters       # default 8 (ignored by some methods)
+    - unsup_min_confidence   # default 0.55
+    - unsup_feature_set_id   # string selector for which columns feed clustering, default "windows_core_v1"
+    - unsup_seed_offset      # deterministic seed offset relative to RunContext base_seed, default 0
+    - unsup_refit_days       # how often trainer refits model, default 30 (trainer-owned)
 
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
     anchor_ts:  { role: key, dtype: timestamp }
-
-    unsup_regime_id:         { role: feature, dtype: string } # label or cluster id; "unknown" if below min_conf
-    unsup_regime_confidence: { role: feature, dtype: double } # 0..1
+    unsup_regime_id:         { role: feature, dtype: string }
+    unsup_regime_confidence: { role: feature, dtype: double }
 
 
 
@@ -391,7 +398,9 @@ ta_memory:
     - ta_memory_ema_touch_band_bps            # default 10.0 (distance band around EMA for 'touch')
     - ta_memory_recency_half_life_bars        # default 50
     - ta_memory_min_periods                   # default 10
-
+    - ta_mem_rsi_period                       # default 14
+    - ta_mem_rsi_oversold_cut                 # default 30
+    - ta_mem_rsi_overbought_cut               # default 70
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
