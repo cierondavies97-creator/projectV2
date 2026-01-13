@@ -1,0 +1,477 @@
+# conf/features_registry.yaml
+# Master definition of feature families and their columns.
+#
+# Contract:
+# - This registry is the canonical "feature surface" for Core v1.
+# - Families declare:
+#     table          : physical output table
+#     enabled        : whether deterministic pipeline emits the family
+#     maturity       : "stub" | "experimental" | "stable" | "legacy"
+#     threshold_keys : the ONLY tunable knobs for research.features_bayes
+#     primary_key    : logical keys for joins (table-specific)
+#     columns        : full column map with role ("key"|"feature") and dtype
+#
+# Notes:
+# - Arrays must be represented as JSON-encoded strings in parquet-backed tables.
+# - This file is read-only at runtime; trainers propose updates via features_auto.yaml.
+
+# ------------------------------------------------------------------------
+# Bar-level features (per instrument, anchor_tf, ts)
+# ------------------------------------------------------------------------
+ict_struct:
+  table: "data/features"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys:
+    # FVG / OB / BOS knobs (examples used by research.features_bayes)
+    - fvg_min_gap_ticks
+    - fvg_max_fill_bars
+    - ob_lookback_bars
+    - ob_height_ticks_min
+    - bos_window_bars_min
+    - bos_window_bars_max
+    # Vol bucket edges for ATR-z / regimes
+    - atr_z_low_high_cut
+    - atr_z_medium_high_cut
+  description: "ICT structure + liquidity flags (FVG/OB/BOS/CHoCH), with ATR-based volatility regime."
+  primary_key: [instrument, anchor_tf, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    # FVG
+    fvg_direction:        { role: feature, dtype: string }     # bullish|bearish|none
+    fvg_gap_ticks:        { role: feature, dtype: double }
+    fvg_origin_tf:        { role: feature, dtype: string }
+    fvg_origin_ts:        { role: feature, dtype: timestamp }
+    fvg_fill_state:       { role: feature, dtype: string }     # unfilled|partially_filled|filled
+    fvg_location_bucket:  { role: feature, dtype: string }     # premium|equilibrium|discount
+
+    # Order blocks
+    ob_type:              { role: feature, dtype: string }     # bullish|bearish|none
+    ob_high:              { role: feature, dtype: double }
+    ob_low:               { role: feature, dtype: double }
+    ob_origin_ts:         { role: feature, dtype: timestamp }
+    ob_freshness_bucket:  { role: feature, dtype: string }     # fresh|mitigated|old|none
+
+    # Liquidity / equal highs/lows
+    eqh_flag:             { role: feature, dtype: boolean }
+    eql_flag:             { role: feature, dtype: boolean }
+    liq_grab_flag:        { role: feature, dtype: boolean }
+    ict_struct_liquidity_tag: { role: feature, dtype: string } # legacy/freeform tag
+
+    # Swing anchors (kept for backward compatibility with early implementations)
+    ict_struct_swing_high:    { role: feature, dtype: double }
+    ict_struct_swing_low:     { role: feature, dtype: double }
+    ict_struct_pd_index:      { role: feature, dtype: int }
+
+    # ATR + vol regime
+    atr_anchor:           { role: feature, dtype: double }
+    atr_z:                { role: feature, dtype: double }
+    vol_regime:           { role: feature, dtype: string }     # low|medium|high
+
+
+ta_trend:
+  table: "data/features"
+  enabled: true
+  maturity: "stable"
+  threshold_keys:
+    - rsi_period
+    - rsi_oversold_cut
+    - rsi_overbought_cut
+    - ema_fast_period
+    - ema_slow_period
+  description: "Trend and momentum primitives (RSI buckets, EMA fast/slow)."
+  primary_key: [instrument, anchor_tf, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+    rsi_value:  { role: feature, dtype: double }
+    rsi_bucket: { role: feature, dtype: string }   # oversold|neutral|overbought
+    ema_fast:   { role: feature, dtype: double }
+    ema_slow:   { role: feature, dtype: double }
+
+
+ta_vol:
+  table: "data/features"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys:
+    - atr_period
+    - ret_window
+  description: "ATR and simple volatility/range statistics."
+  primary_key: [instrument, anchor_tf, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+    atr_value:          { role: feature, dtype: double }  # canonical ATR value
+    ta_vol__atr:        { role: feature, dtype: double }  # legacy name
+    ta_vol__ret1_std:   { role: feature, dtype: double }
+    ta_vol__range_mean: { role: feature, dtype: double }
+
+
+# ------------------------------------------------------------------------
+# Windows-level features (per instrument, anchor_tf, anchor_ts)
+# ------------------------------------------------------------------------
+pac_bar:
+  table: "data/windows"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys:
+    - impulse_threshold
+  description: "Price Action Context (PAC) micro-state around anchor bars; merged into windows/trade paths."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+    pac_micro_state_anchor:    { role: feature, dtype: string }
+    pac_micro_state_pre_entry: { role: feature, dtype: string }
+    pac_micro_state_post_entry: { role: feature, dtype: string }
+    pac_micro_state_start:     { role: feature, dtype: string }
+    pac_micro_state_mid:       { role: feature, dtype: string }
+    pac_micro_state_end:       { role: feature, dtype: string }
+    pac_path_regime:           { role: feature, dtype: string }
+    pac_entry_immediate_rejection_flag:    { role: feature, dtype: boolean }
+    pac_entry_immediate_followthrough_flag: { role: feature, dtype: boolean }
+
+
+stat_ts:
+  table: "data/windows"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys: []
+  description: "Statistical time-series features (returns/vol/range + optional autocorr/seasonality), merged into windows."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    stat_ts_return:        { role: feature, dtype: double }
+    stat_ts_vol:           { role: feature, dtype: double }
+    stat_ts_range:         { role: feature, dtype: double }
+    stat_ts_return_zscore: { role: feature, dtype: double }
+    stat_ts_vol_zscore:    { role: feature, dtype: double }
+    stat_ts_range_zscore:  { role: feature, dtype: double }
+
+    # Optional extended stats (nullable until implemented)
+    stat_ts_autocorr1:     { role: feature, dtype: double }
+    stat_ts_skew:          { role: feature, dtype: double }
+    stat_ts_kurtosis:      { role: feature, dtype: double }
+
+
+unsup_regime:
+  table: "data/windows"
+  enabled: false
+  maturity: "stub"
+  threshold_keys:
+    - unsup_n_clusters
+    - unsup_min_confidence
+  description: "Unsupervised regime labels and confidence (clustered on windows/features)."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+    unsup_regime_id:         { role: feature, dtype: string }
+    unsup_regime_confidence: { role: feature, dtype: double }
+
+
+carry_ts:
+  table: "data/windows"
+  enabled: false
+  maturity: "stub"
+  threshold_keys:
+    - carry_slope_window_bars
+    - carry_regime_flat_cut
+  description: "Carry / term-structure proxies merged into windows."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+    carry_ts_carry_score: { role: feature, dtype: double }
+    carry_ts_ts_slope:    { role: feature, dtype: double }
+    carry_ts_ts_regime:   { role: feature, dtype: string }  # backwardated|contango|flat
+
+
+# ------------------------------------------------------------------------
+# Zone memory (per instrument, anchor_tf, zone_id, ts)
+# ------------------------------------------------------------------------
+zmf_core:
+  table: "data/zones_state"
+  enabled: true
+  maturity: "stable"
+  threshold_keys:
+    - touch_count_strong_min
+    - zone_freshness_recent_bars
+  description: "Zone Memory Framework (geometry + touch/freshness/behaviour/stack/HTF confluence)."
+  primary_key: [instrument, anchor_tf, zone_id, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    zone_id:    { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    zone_index:        { role: feature, dtype: int }
+    zone_lower_price:  { role: feature, dtype: double }
+    zone_upper_price:  { role: feature, dtype: double }
+    zone_mid_price:    { role: feature, dtype: double }
+
+    touch_count:             { role: feature, dtype: int }
+    zone_touch_count_bucket: { role: feature, dtype: string }   # low|medium|high|extreme
+    fvg_origin_count:        { role: feature, dtype: int }
+    ob_origin_count:         { role: feature, dtype: int }
+    liq_grab_count:          { role: feature, dtype: int }
+
+    zone_reaction_strength_bucket:      { role: feature, dtype: string }  # weak|medium|strong
+    zone_reaction_consistency_bucket:   { role: feature, dtype: string }  # inconsistent|semi_consistent|consistent
+    zone_freshness_bucket:              { role: feature, dtype: string }  # fresh|maturing|crowded|stale|dead|none
+
+    avg_dwell_bars:         { role: feature, dtype: double }
+    zone_avg_dwell_bucket:  { role: feature, dtype: string }   # short|medium|long
+
+    zone_behaviour_type:    { role: feature, dtype: string }   # reversal_biased|breakout_biased|mixed
+    zone_behaviour_type_bucket: { role: feature, dtype: string }
+
+    zone_rsi_prev_overbought_flag: { role: feature, dtype: boolean }
+    zone_rsi_prev_oversold_flag:   { role: feature, dtype: boolean }
+    zone_rsi_bias_bucket:          { role: feature, dtype: string }  # bullish|neutral|bearish
+
+    zone_htf_confluence:        { role: feature, dtype: string }     # none|single|multiple
+    zone_htf_confluence_bucket: { role: feature, dtype: string }
+
+    zone_stack_depth:        { role: feature, dtype: int }
+    zone_stack_depth_bucket: { role: feature, dtype: string }        # single|double|triple_or_more|none
+
+    # Backward-compatible early names (nullable; may be removed in a future "legacy" cleanup)
+    zmf_zone_kind:   { role: feature, dtype: string }
+    zmf_zone_lo:     { role: feature, dtype: double }
+    zmf_zone_hi:     { role: feature, dtype: double }
+    zmf_zone_mid:    { role: feature, dtype: double }
+    zmf_zone_width:  { role: feature, dtype: double }
+
+
+vp_core:
+  table: "data/zones_state"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys:
+    - vp_hvn_lvn_ratio_cut
+    - vp_skew_abs_strong_cut
+  description: "Volume-profile primitives per zone (POC, skew, HVN/LVN flags, type)."
+  primary_key: [instrument, anchor_tf, zone_id, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    zone_id:    { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    zone_vp_total_volume_units:        { role: feature, dtype: double }
+    zone_vp_poc_price:                 { role: feature, dtype: double }
+    zone_vp_poc_relative_position:     { role: feature, dtype: double } # 0..1
+    zone_vp_volume_lower_units:        { role: feature, dtype: double }
+    zone_vp_volume_upper_units:        { role: feature, dtype: double }
+    zone_vp_skew:                      { role: feature, dtype: double }
+    zone_vp_hvn_flag:                  { role: feature, dtype: boolean }
+    zone_vp_lvn_flag:                  { role: feature, dtype: boolean }
+    zone_vp_type:                      { role: feature, dtype: string }  # balanced_hvn|rejection_lvn|skewed_high|skewed_low|thin
+    zone_vp_type_bucket:               { role: feature, dtype: string }
+
+
+ta_memory:
+  table: "data/zones_state"
+  enabled: false
+  maturity: "stub"
+  threshold_keys: []
+  description: "TA memory features scoped to zones (e.g., prior RSI/EMA interactions)."
+  primary_key: [instrument, anchor_tf, zone_id, ts]
+  columns: {}
+
+
+# ------------------------------------------------------------------------
+# Microstructure PCR/A (per instrument, anchor_tf, anchor_ts)
+# ------------------------------------------------------------------------
+pcra_bar:
+  table: "data/pcr_a"
+  enabled: true
+  maturity: "stable"
+  threshold_keys:
+    - radius_s
+    - vol_z_window
+    - vol_z_low_high_cut
+    - vol_z_medium_high_cut
+    # Bucket edges for OFI
+    - ofi_strong_sell_cut
+    - ofi_strong_buy_cut
+  description: "PCrA bar-level orderflow/microstructure buckets and supporting values."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    pcr_ofi_value:        { role: feature, dtype: double }
+    pcr_ofi_bucket:       { role: feature, dtype: string }   # strong_buy|balanced|strong_sell
+    pcr_micro_vol_value:  { role: feature, dtype: double }
+    pcr_micro_vol_bucket: { role: feature, dtype: string }   # low|medium|high
+    pcr_range_value:      { role: feature, dtype: double }
+    pcr_range_bucket:     { role: feature, dtype: string }   # narrow|normal|wide
+    pcr_clv_bucket:       { role: feature, dtype: string }   # close_near_high|close_near_mid|close_near_low
+
+
+pcra_tick:
+  table: "data/pcr_a"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys:
+    - tick_imbalance_ratio_threshold
+    - tick_concentration_ratio_at_threshold
+    - tick_sweep_range_ticks_threshold
+    - tick_absorption_volume_threshold
+    - tick_absorption_range_ticks_threshold
+    - tick_delta_z_strong
+  description: "PCrA tick-level footprint/sweep/absorption features (derived from tick/footprint inputs)."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    pcr_tick_total_volume_units:        { role: feature, dtype: double }
+    pcr_tick_delta_units:               { role: feature, dtype: double }
+    pcr_tick_delta_z:                   { role: feature, dtype: double }
+    pcr_tick_imbalance_ratio:           { role: feature, dtype: double }
+    pcr_tick_imbalance_flag:            { role: feature, dtype: boolean }
+    pcr_tick_concentration_ratio_at:    { role: feature, dtype: double }
+    pcr_tick_concentration_flag_at:     { role: feature, dtype: boolean }
+    pcr_tick_sweep_flag:                { role: feature, dtype: boolean }
+    pcr_tick_absorption_flag:           { role: feature, dtype: boolean }
+    pcr_footprint_pattern:              { role: feature, dtype: string }
+
+
+# ------------------------------------------------------------------------
+# Correlation & cross-section (per instrument, ts)
+# ------------------------------------------------------------------------
+corr_micro:
+  table: "data/features_corr"
+  enabled: true
+  maturity: "stable"
+  threshold_keys:
+    - corr_window_bars
+    - corr_strong_cut
+  description: "Fast micro correlation and correlation-cluster regime state."
+  primary_key: [instrument, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+    corr_dxy:          { role: feature, dtype: double }
+    corr_index_major:  { role: feature, dtype: double }
+    corr_oil:          { role: feature, dtype: double }
+    micro_corr_regime: { role: feature, dtype: string }   # aligned|divergent|unstable
+    corr_cluster_id:   { role: feature, dtype: string }
+
+
+corr_htf:
+  table: "data/features_corr"
+  enabled: false
+  maturity: "stub"
+  threshold_keys: []
+  description: "Higher-timeframe correlation and cluster state (reserved)."
+  primary_key: [instrument, ts]
+  columns: {}
+
+
+xs_relval:
+  table: "data/features_corr"
+  enabled: false
+  maturity: "stub"
+  threshold_keys:
+    - xs_relval_spread_z_window
+  description: "Cross-sectional relative value and spreads (reserved)."
+  primary_key: [instrument, ts]
+  columns:
+    instrument: { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+    xs_relval_spread_level:   { role: feature, dtype: double }
+    xs_relval_spread_zscore:  { role: feature, dtype: double }
+    xs_relval_carry_rank:     { role: feature, dtype: double }
+    xs_relval_momo_rank:      { role: feature, dtype: double }
+
+
+# ------------------------------------------------------------------------
+# Macro calendar & regimes (global per dt, joinable by ts)
+# ------------------------------------------------------------------------
+macro_calendar:
+  table: "data/macro"
+  enabled: true
+  maturity: "stable"
+  threshold_keys:
+    - pre_event_minutes_default
+    - post_event_minutes_default
+  description: "Macro event windows + blackout flags; joinable into windows/decisions."
+  primary_key: [ts]
+  columns:
+    ts:           { role: key, dtype: timestamp }   # join-effective time
+    release_ts:   { role: feature, dtype: timestamp }
+    window_start: { role: feature, dtype: timestamp }
+    window_end:   { role: feature, dtype: timestamp }
+
+    macro_state:  { role: feature, dtype: string }   # quiet|pre_event|red_window|post_event
+    blackout:     { role: feature, dtype: boolean }
+
+    event_name:    { role: feature, dtype: string }
+    impact_level:  { role: feature, dtype: int }
+    currency:      { role: feature, dtype: string }
+    country:       { role: feature, dtype: string }
+    severity:      { role: feature, dtype: int }
+    asset_relevance: { role: feature, dtype: string }
+
+
+macro_regime:
+  table: "data/macro"
+  enabled: false
+  maturity: "stub"
+  threshold_keys: []
+  description: "Derived macro regime labels (reserved)."
+  primary_key: [ts]
+  columns:
+    ts:                    { role: key, dtype: timestamp }
+    macro_regime_id:       { role: feature, dtype: string }
+    macro_regime_label:    { role: feature, dtype: string }
+    macro_regime_confidence: { role: feature, dtype: double }
+
+
+# ------------------------------------------------------------------------
+# Trade-path intelligence (per trade_id; stored on trade_paths)
+# ------------------------------------------------------------------------
+trade_path_class:
+  table: "data/trade_paths"
+  enabled: true
+  maturity: "experimental"
+  threshold_keys:
+    - path_cluster_n_clusters
+    - path_shape_time_to_1R_bars_max
+    - path_mae_R_bucket_edges_json   # JSON array string stored in features_auto; interpreted by classifier
+  description: "Trade-path shape and path-filter tags (equity-curve descriptors and clustering outputs)."
+  primary_key: [trade_id]
+  columns:
+    trade_id:   { role: key, dtype: string }
+
+    path_shape:             { role: feature, dtype: string }  # straight_runner|dip_then_go|grind_then_go|straight_fail|chop_and_die|...
+    path_cluster_id:        { role: feature, dtype: string }
+    path_family_id:         { role: feature, dtype: string }  # coarse family label
+    path_filter_primary:    { role: feature, dtype: string }
+    path_filter_tags_json:  { role: feature, dtype: string }  # JSON array string
+
+    # Optional path diagnostics (nullable until implemented)
+    time_to_1R_bars:        { role: feature, dtype: int }
+    time_to_2R_bars:        { role: feature, dtype: int }
+    mae_R:                  { role: feature, dtype: double }
+    mae_R_bucket:           { role: feature, dtype: string }
+    mfe_R:                  { role: feature, dtype: double }
+    exit_reason:            { role: feature, dtype: string }

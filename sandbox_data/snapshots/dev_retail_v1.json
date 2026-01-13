@@ -1,0 +1,28 @@
+﻿{
+  "snapshot_id": "dev_retail_v1",
+  "description": "Dev smoke snapshot: single day, single instrument (XAUUSD), tiny slice for microbatch tests.",
+  "created_ts": "2025-01-02T00:00:00Z",
+
+  "config_refs": {
+    "retail_config_path": "conf/retail.yaml",
+    "features_registry_path": "conf/features_registry.yaml",
+    "features_auto_path": "conf/features_auto.yaml",
+    "rails_auto_path": "conf/rails_auto.yaml",
+    "portfolio_auto_path": "conf/portfolio_auto.yaml",
+    "path_filters_auto_path": "conf/path_filters_auto.yaml",
+    "paradigms_dir": "conf/paradigms",
+    "principles_dir": "conf/principles"
+  },
+
+  "paradigms": [],
+  "principles": [],
+
+  "data_slice": {
+    "start_dt": "2025-01-02",
+    "end_dt": "2025-01-02",
+    "instruments": ["XAUUSD"],
+    "anchor_tfs": ["M5"],
+    "tf_entries": ["M1"],
+    "contexts_filter": null
+  }
+}

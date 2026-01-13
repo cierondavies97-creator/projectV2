@@ -1,0 +1,8 @@
+paradigm_id: "dev_baseline"
+principle_id: "dev_all_windows"
+
+pretrade:
+  macro_blackout:
+    enabled: true
+    on_blackout: "inherit"   # reserved for future when principle-level overrides are wired
+    require_macro_column: false

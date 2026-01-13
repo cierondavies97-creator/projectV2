@@ -1,0 +1,84 @@
+# conf/retail.yaml
+# Global runtime and layout configuration for all modes.
+
+modes:
+  default_mode: "backtest"        # one of "backtest", "paper", "live"
+  allow_live: true                # must be true to allow runs with mode="live"
+
+instruments:
+  - instrument: "EURUSD"
+    cluster_id: "majors"
+    pip_size: 0.0001
+    min_tick: 0.00001
+
+  - instrument: "GBPUSD"
+    cluster_id: "majors"
+    pip_size: 0.0001
+    min_tick: 0.00001
+
+  - instrument: "XAUUSD"
+    cluster_id: "metals"
+    pip_size: 0.1
+    min_tick: 0.01
+
+  - instrument: "US500"
+    cluster_id: "indices_us"
+    pip_size: 0.25
+    min_tick: 0.25
+
+timeframes:
+  # Anchor timeframes = memory model / HTF structure views
+  anchor_tfs:
+    - "M1"
+    - "M5"
+    - "M15"
+    - "M30"
+    - "H1"
+    - "H4"
+    - "D1"
+
+  # Entry timeframes = where you actually place orders and manage brackets
+  tf_entry:
+    - "S1"
+    - "M1"
+    - "M5"
+    - "M15"
+
+risk:
+  base_risk_per_trade_bps: 25           # default basis points of account per trade
+  max_risk_per_instrument_bps: 150      # maximum simultaneous risk per instrument
+  max_risk_per_cluster_bps: 300         # maximum simultaneous risk per cluster
+  max_open_trades: 10                   # hard cap on total open trades
+
+macro:
+  enable_macro_state: true
+
+  # Where the calendar parquet hierarchy lives; used by macro_calendar family.
+  macro_calendar_source: "data/macro"
+
+  # Default blackout window around each event if event-specific overrides are absent.
+  blackout_default_minutes_pre: 15
+  blackout_default_minutes_post: 15
+
+  # Global defaults for pretrade macro handling.
+  pretrade:
+    enable_blackout_filter: true
+
+    # Behaviour if a trade is in blackout:
+    #   - "drop"     : remove the trade before gatekeeper/portfolio
+    #   - "tag_only" : keep the trade but tag it; no size change
+    on_blackout: "drop"
+
+    # If true, and macro_is_blackout is missing on decisions, log a warning
+    # and fall back to pass-through rather than crashing.
+    require_macro_column: false
+
+paths:
+  data_root: "data"
+  sandbox_root: "sandbox_data"
+  logs_root: "logs"
+
+sessions:
+  london_open_hour_utc: 8
+  newyork_open_hour_utc: 13
+  asia_open_hour_utc: 0

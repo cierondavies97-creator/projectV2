@@ -1,0 +1,17 @@
+﻿feature_families:
+  ict_struct:
+    description: "ICT structure features (dev baseline)."
+    keys: ["instrument", "anchor_tf", "ts"]
+    columns:
+      ict_struct_swing_high: {dtype: float64}
+      ict_struct_swing_low: {dtype: float64}
+      ict_struct_pd_index: {dtype: float64}
+      ict_struct_liquidity_tag: {dtype: string}
+
+  stat_ts:
+    description: "Stat-TS z-score features (dev baseline)."
+    keys: ["instrument", "anchor_tf", "ts"]
+    columns:
+      stat_ts_vol_zscore: {dtype: float64}
+      stat_ts_return_zscore: {dtype: float64}
+      stat_ts_range_zscore: {dtype: float64}

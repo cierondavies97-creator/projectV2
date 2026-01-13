@@ -1,0 +1,42 @@
+﻿{
+    "snapshot_id":  "dev_retail_v1_ict",
+    "description":  "Dev smoke snapshot: single day, single instrument (XAUUSD), tiny slice for microbatch tests. | ICT enabled",
+    "created_ts":  "2025-12-22T23:59:01Z",
+    "config_refs":  {
+                        "retail_config_path":  "conf/retail.yaml",
+                        "features_registry_path":  "conf/features_registry.yaml",
+                        "features_auto_path":  "conf/features_auto.yaml",
+                        "rails_auto_path":  "conf/rails_auto.yaml",
+                        "portfolio_auto_path":  "conf/portfolio_auto.yaml",
+                        "path_filters_auto_path":  "conf/path_filters_auto.yaml",
+                        "paradigms_dir":  "conf/paradigms",
+                        "principles_dir":  "conf/principles"
+                    },
+    "paradigms":  [
+                      {
+                          "paradigm_id":  "ict",
+                          "paradigm_config_path":  "conf/paradigms/ict.yaml"
+                      }
+                  ],
+    "principles":  [
+                       {
+                           "paradigm_id":  "ict",
+                           "principle_id":  "ict_all_windows",
+                           "principle_config_path":  "conf/principles/ict/ict_all_windows.yaml"
+                       }
+                   ],
+    "data_slice":  {
+                       "start_dt":  "2025-01-02",
+                       "end_dt":  "2025-01-02",
+                       "instruments":  [
+                                           "XAUUSD"
+                                       ],
+                       "anchor_tfs":  [
+                                          "M5"
+                                      ],
+                       "tf_entries":  [
+                                          "M1"
+                                      ],
+                       "contexts_filter":  null
+                   }
+}

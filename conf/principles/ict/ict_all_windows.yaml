@@ -1,0 +1,14 @@
+paradigm_id: "ict"
+principle_id: "ict_all_windows"
+description: "ICT hypotheses across all windows (Phase A)"
+
+hypotheses:
+  impl: "ict_all_windows"
+  required_features:
+    - "ict_struct"
+    - "stat_ts"
+    - "macro_calendar"
+  filters:
+    vol_z_abs_min: 0.5
+    swing_only: false
+    allow_macro_blackout: false

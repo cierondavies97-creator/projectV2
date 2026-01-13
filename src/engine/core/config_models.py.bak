@@ -1,0 +1,416 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Dict
+
+import yaml  # You will add PyYAML to your pyproject dependencies.
+
+from engine.core.schema import SnapshotManifest
+
+
+# ---------------------------------------------------------------------------
+# Retail config models (conf/retail.yaml)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RetailModesConfig:
+    default_mode: str              # "backtest" | "paper" | "live"
+    allow_live: bool
+
+
+@dataclass(frozen=True)
+class RetailInstrumentConfig:
+    instrument: str                # e.g. "EURUSD"
+    cluster_id: str                # e.g. "majors"
+    pip_size: float
+    min_tick: float
+
+
+@dataclass(frozen=True)
+class RetailTimeframesConfig:
+    anchor_tfs: List[str]          # e.g. ["M1", "M5", "M15", ...]
+    tf_entry: List[str]            # e.g. ["S5", "M1", "M5", "M15"]
+
+
+@dataclass(frozen=True)
+class RetailRiskConfig:
+    base_risk_per_trade_bps: int
+    max_risk_per_instrument_bps: int
+    max_risk_per_cluster_bps: int
+    max_open_trades: int
+
+
+@dataclass(frozen=True)
+class RetailMacroConfig:
+    enable_macro_state: bool
+    macro_calendar_source: str
+    blackout_default_minutes_pre: int
+    blackout_default_minutes_post: int
+
+
+@dataclass(frozen=True)
+class RetailPathsConfig:
+    data_root: str
+    sandbox_root: str
+    logs_root: str
+
+
+@dataclass(frozen=True)
+class RetailSessionsConfig:
+    london_open_hour_utc: int
+    newyork_open_hour_utc: int
+    asia_open_hour_utc: int
+
+
+@dataclass(frozen=True)
+class RetailConfig:
+    """
+    Typed representation of conf/retail.yaml.
+
+    Field names mirror the top-level YAML keys exactly:
+      - modes
+      - instruments
+      - timeframes
+      - risk
+      - macro
+      - paths
+      - sessions
+    """
+
+    modes: RetailModesConfig
+    instruments: List[RetailInstrumentConfig]
+    timeframes: RetailTimeframesConfig
+    risk: RetailRiskConfig
+    macro: RetailMacroConfig
+    paths: RetailPathsConfig
+    sessions: RetailSessionsConfig
+
+
+def load_retail_config(path: Path | str = Path("conf/retail.yaml")) -> RetailConfig:
+    """
+    Load conf/retail.yaml into a RetailConfig.
+
+    This is the canonical loader; all engine code should go through this
+    rather than reading YAML directly.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"retail.yaml not found at: {p}")
+
+    with p.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    modes_raw = raw["modes"]
+    timeframes_raw = raw["timeframes"]
+    risk_raw = raw["risk"]
+    macro_raw = raw["macro"]
+    paths_raw = raw["paths"]
+    sessions_raw = raw["sessions"]
+    instruments_raw = raw["instruments"]
+
+    modes = RetailModesConfig(
+        default_mode=modes_raw["default_mode"],
+        allow_live=bool(modes_raw["allow_live"]),
+    )
+
+    instruments = [
+        RetailInstrumentConfig(
+            instrument=item["instrument"],
+            cluster_id=item["cluster_id"],
+            pip_size=float(item["pip_size"]),
+            min_tick=float(item["min_tick"]),
+        )
+        for item in instruments_raw
+    ]
+
+    timeframes = RetailTimeframesConfig(
+        anchor_tfs=list(timeframes_raw.get("anchor_tfs", [])),
+        tf_entry=list(timeframes_raw.get("tf_entry", [])),
+    )
+
+    risk = RetailRiskConfig(
+        base_risk_per_trade_bps=int(risk_raw["base_risk_per_trade_bps"]),
+        max_risk_per_instrument_bps=int(risk_raw["max_risk_per_instrument_bps"]),
+        max_risk_per_cluster_bps=int(risk_raw["max_risk_per_cluster_bps"]),
+        max_open_trades=int(risk_raw["max_open_trades"]),
+    )
+
+    macro = RetailMacroConfig(
+        enable_macro_state=bool(macro_raw["enable_macro_state"]),
+        macro_calendar_source=macro_raw["macro_calendar_source"],
+        blackout_default_minutes_pre=int(macro_raw["blackout_default_minutes_pre"]),
+        blackout_default_minutes_post=int(macro_raw["blackout_default_minutes_post"]),
+    )
+
+    paths = RetailPathsConfig(
+        data_root=paths_raw["data_root"],
+        sandbox_root=paths_raw["sandbox_root"],
+        logs_root=paths_raw["logs_root"],
+    )
+
+    sessions = RetailSessionsConfig(
+        london_open_hour_utc=int(sessions_raw["london_open_hour_utc"]),
+        newyork_open_hour_utc=int(sessions_raw["newyork_open_hour_utc"]),
+        asia_open_hour_utc=int(sessions_raw["asia_open_hour_utc"]),
+    )
+
+    return RetailConfig(
+        modes=modes,
+        instruments=instruments,
+        timeframes=timeframes,
+        risk=risk,
+        macro=macro,
+        paths=paths,
+        sessions=sessions,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cluster + timeframe resolution
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClusterPlan:
+    """
+    Plan for a given cluster and snapshot:
+
+      - cluster_id      : which cluster we are running
+      - instruments     : instruments in this cluster after applying snapshot filters
+      - anchor_tfs      : anchor timeframes to use (intersection of retail + snapshot)
+      - entry_tfs       : entry timeframes to use (intersection of retail + snapshot)
+    """
+
+    cluster_id: str
+    instruments: List[str]
+    anchor_tfs: List[str]
+    entry_tfs: List[str]
+
+
+def _cluster_instruments(retail: RetailConfig, cluster_id: str) -> List[str]:
+    instruments = [
+        inst.instrument
+        for inst in retail.instruments
+        if inst.cluster_id == cluster_id
+    ]
+    if not instruments:
+        raise ValueError(f"No instruments configured for cluster_id='{cluster_id}'")
+    return instruments
+
+
+def _maybe_filter_by_snapshot_instruments(
+    instruments: List[str],
+    snapshot: SnapshotManifest,
+) -> List[str]:
+    """
+    Filter instruments by snapshot.data_slice.instruments if that list is non-empty.
+    Preserve the original order from 'instruments'.
+    """
+    slice_instruments = snapshot.data_slice.instruments
+    if not slice_instruments:
+        return instruments
+
+    allowed = set(slice_instruments)
+    return [inst for inst in instruments if inst in allowed]
+
+
+def _intersect_preserve_order(base: List[str], filter_list: List[str]) -> List[str]:
+    """
+    Return items from base that are also in filter_list, preserving base order.
+    If filter_list is empty, return base as-is.
+    """
+    if not filter_list:
+        return base
+    allowed = set(filter_list)
+    return [x for x in base if x in allowed]
+
+
+def build_cluster_plan(
+    snapshot: SnapshotManifest,
+    retail: RetailConfig,
+    cluster_id: str,
+) -> ClusterPlan:
+    """
+    Build a ClusterPlan for a given (snapshot, retail_config, cluster_id).
+
+    Rules:
+      - Start from all instruments in retail.instruments with that cluster_id.
+      - If snapshot.data_slice.instruments is non-empty, intersect with that list.
+      - Anchor TFs:
+          base = retail.timeframes.anchor_tfs
+          filter = snapshot.data_slice.anchor_tfs (if non-empty)
+          anchor_tfs = intersection(base, filter)
+      - Entry TFs:
+          base = retail.timeframes.tf_entry
+          filter = snapshot.data_slice.tf_entries (if non-empty)
+          entry_tfs = intersection(base, filter)
+
+    If the resulting instrument list is empty, this function raises ValueError.
+    """
+    base_instruments = _cluster_instruments(retail, cluster_id)
+    instruments = _maybe_filter_by_snapshot_instruments(base_instruments, snapshot)
+
+    if not instruments:
+        raise ValueError(
+            f"After applying snapshot filters, no instruments remain for cluster_id='{cluster_id}'"
+        )
+
+    # Timeframes
+    base_anchor = retail.timeframes.anchor_tfs
+    base_entry = retail.timeframes.tf_entry
+
+    slice_anchor = snapshot.data_slice.anchor_tfs
+    slice_entry = snapshot.data_slice.tf_entries
+
+    anchor_tfs = _intersect_preserve_order(base_anchor, slice_anchor)
+    entry_tfs = _intersect_preserve_order(base_entry, slice_entry)
+
+    if not anchor_tfs:
+        raise ValueError(
+            "ClusterPlan produced no anchor_tfs "
+            "(check retail.yaml and snapshot.data_slice.anchor_tfs)"
+        )
+
+    if not entry_tfs:
+        raise ValueError(
+            "ClusterPlan produced no entry_tfs "
+            "(check retail.yaml and snapshot.data_slice.tf_entries)"
+        )
+
+    return ClusterPlan(
+        cluster_id=cluster_id,
+        instruments=instruments,
+        anchor_tfs=anchor_tfs,
+        entry_tfs=entry_tfs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Feature registry (conf/features_registry.yaml)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FeatureFamilyRegistryEntry:
+    """
+    Registry entry for a single feature family.
+
+    Mirrors one family section in conf/features_registry.yaml.
+
+    Fields:
+      - family_id      : identifier, e.g. 'ict_struct', 'pcra_bar'
+      - table          : physical table path
+                         (e.g. 'data/features', 'data/zones_state', 'data/pcr_a',
+                               'data/windows', 'data/features_corr', 'data/macro',
+                               'data/trade_paths')
+      - enabled        : whether this family is active
+      - maturity       : 'stub' | 'experimental' | 'stable' | 'legacy'
+      - columns        : mapping from column_name -> type string
+      - threshold_keys : list of keys that trainers are allowed to tune
+    """
+
+    family_id: str
+    table: str
+    enabled: bool
+    maturity: str
+    columns: Dict[str, str]
+    threshold_keys: List[str]
+
+
+@dataclass(frozen=True)
+class FeaturesRegistryConfig:
+    """
+    Typed representation of conf/features_registry.yaml.
+
+    The YAML is expected to be a mapping from family_id to an object
+    with fields:
+
+      table: str
+      enabled: bool
+      maturity: str
+      columns: mapping[str, str]
+      threshold_keys: list[str]
+    """
+
+    families: Dict[str, FeatureFamilyRegistryEntry]
+
+
+def load_features_registry(
+    path: Path | str = Path("conf/features_registry.yaml"),
+) -> FeaturesRegistryConfig:
+    """
+    Load conf/features_registry.yaml into a FeaturesRegistryConfig.
+
+    This loader is intentionally strict about required fields, so that
+    feature families stay aligned with trainers and RFE.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"features_registry.yaml not found at: {p}")
+
+    with p.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    if not isinstance(raw, dict):
+        raise ValueError("features_registry.yaml must be a mapping from family_id to config")
+
+    families: Dict[str, FeatureFamilyRegistryEntry] = {}
+
+    for family_id, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            raise ValueError(f"Registry entry for family_id='{family_id}' must be a mapping")
+
+        table = cfg["table"]
+        enabled = bool(cfg.get("enabled", True))
+        maturity = cfg.get("maturity", "experimental")
+
+        columns_raw = cfg.get("columns", {}) or {}
+        if not isinstance(columns_raw, dict):
+            raise ValueError(f"'columns' for family_id='{family_id}' must be a mapping")
+
+        threshold_keys_raw = cfg.get("threshold_keys", []) or []
+        if not isinstance(threshold_keys_raw, list):
+            raise ValueError(f"'threshold_keys' for family_id='{family_id}' must be a list")
+
+        entry = FeatureFamilyRegistryEntry(
+            family_id=family_id,
+            table=str(table),
+            enabled=enabled,
+            maturity=str(maturity),
+            columns={str(k): str(v) for k, v in columns_raw.items()},
+            threshold_keys=[str(x) for x in threshold_keys_raw],
+        )
+        families[family_id] = entry
+
+    return FeaturesRegistryConfig(families=families)
+
+
+def families_for_table(
+    registry: FeaturesRegistryConfig,
+    table: str,
+    *,
+    include_disabled: bool = False,
+    include_stub: bool = False,
+) -> List[FeatureFamilyRegistryEntry]:
+    """
+    Return all families targeting a given physical table path.
+
+    Filters:
+      - By default, only families with enabled=True and maturity != 'stub' are returned.
+      - include_disabled=True -> ignore 'enabled' and return disabled families too.
+      - include_stub=True     -> include families with maturity == 'stub'.
+    """
+    out: List[FeatureFamilyRegistryEntry] = []
+
+    for entry in registry.families.values():
+        if entry.table != table:
+            continue
+        if not include_disabled and not entry.enabled:
+            continue
+        if not include_stub and entry.maturity == "stub":
+            continue
+        out.append(entry)
+
+    return out

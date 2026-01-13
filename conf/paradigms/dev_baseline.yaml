@@ -1,0 +1,27 @@
+﻿paradigm_id: dev_baseline
+description: >
+  Dev baseline paradigm: ICT structure + stat_ts z-scores on XAUUSD,
+  anchor_tf=M5, entry_tf=M1.
+
+clusters:
+  - cluster_id: metals
+    instruments: ["XAUUSD"]
+    anchor_tfs: ["M5"]
+    entry_tfs: ["M1"]
+
+windows:
+  feature_families:
+    - ict_struct
+    - stat_ts
+
+  selection_rule: ict_swing_or_vol
+  selection_params:
+    vol_z_abs_min: 1.0
+
+hypotheses:
+  principles:
+    - principle_id: dev_all_windows
+      description: "Emit a candidate trade for each selected window (dev)."
+      throttle:
+        mode: per_hour
+        max_per_hour: 1

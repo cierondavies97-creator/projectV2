@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any, Optional
+
+import polars as pl
+import yaml
+
+from engine.core.schema import TRADE_PATHS_SCHEMA, polars_dtype
+from engine.data.decisions import write_decisions_for_stage
+from engine.microbatch.types import BatchState
+from engine.data.trade_paths import write_trade_paths_for_day
+from engine.paradigms.api import get_hypotheses_builder
+from engine.research.snapshots import load_snapshot_manifest
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _none_if_blank(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        v = str(v)
+    s = v.strip()
+    return None if s == "" else s
+
+
+def _candidate_norm(v: Any) -> str:
+    s = _none_if_blank(v)
+    return s if s is not None else "∅"
+# ---------------------------------------------------------------------------
+# Evaluation model
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EvaluationSpec:
+    paradigm_id: str
+    principle_id: str
+    candidate_id: Optional[str] = None
+    experiment_id: Optional[str] = None
+    params: dict[str, Any] | None = None
+
+
+def _resolve_principles_dir(snapshot: Any) -> Path:
+    refs = _get(snapshot, "config_refs", {}) or {}
+    p = refs.get("principles_dir") if isinstance(refs, dict) else None
+    if not p:
+        p = "conf/principles"
+    return Path(p)
+
+
+def _find_principle_cfg_path(snapshot: Any, principles_dir: Path, paradigm_id: str, principle_id: str) -> Path:
+    principles = _get(snapshot, "principles", None)
+    if isinstance(principles, list):
+        for it in principles:
+            if not isinstance(it, dict):
+                continue
+            if str(it.get("paradigm_id", "")) == paradigm_id and str(it.get("principle_id", "")) == principle_id:
+                p = it.get("principle_config_path")
+                if p:
+                    return Path(str(p))
+    return principles_dir / paradigm_id / f"{principle_id}.yaml"
+
+
+def _load_principle_cfg(snapshot: Any, principles_dir: Path, paradigm_id: str, principle_id: str) -> dict[str, Any]:
+    path = _find_principle_cfg_path(snapshot, principles_dir, paradigm_id, principle_id)
+    if not path.exists():
+        raise FileNotFoundError(f"principle config not found: {path}")
+
+    obj = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if obj is None:
+        obj = {}
+    if not isinstance(obj, dict):
+        raise ValueError(f"principle config must be a mapping: {path}")
+    return obj
+
+
+def _merge_params(base_cfg: dict[str, Any], eval_params: Optional[dict[str, Any]]) -> dict[str, Any]:
+    out = dict(base_cfg)
+    base_params = out.get("params") or {}
+    if not isinstance(base_params, dict):
+        base_params = {}
+    merged = dict(base_params)
+    if isinstance(eval_params, dict) and eval_params:
+        merged.update(eval_params)
+    out["params"] = merged
+    return out
+
+
+def _extract_evaluations(state: BatchState, snapshot: Any) -> list[EvaluationSpec]:
+    eval_plan = _get(snapshot, "evaluation_plan", None)
+    evals = _get(eval_plan, "evaluations", None)
+
+    # Phase B preferred: explicit evaluation plan
+    if isinstance(evals, list) and len(evals) > 0:
+        out: list[EvaluationSpec] = []
+        for e in evals:
+            if not isinstance(e, dict):
+                raise ValueError("evaluation_plan.evaluations must be a list of objects")
+            pid = _none_if_blank(e.get("paradigm_id"))
+            prid = _none_if_blank(e.get("principle_id"))
+            if not pid or not prid:
+                raise ValueError(f"Invalid evaluation entry (missing paradigm_id/principle_id): {e}")
+            out.append(
+                EvaluationSpec(
+                    paradigm_id=str(pid),
+                    principle_id=str(prid),
+                    candidate_id=_none_if_blank(e.get("candidate_id")),
+                    experiment_id=_none_if_blank(e.get("experiment_id")),
+                    params=(e.get("params") or {}) if isinstance(e.get("params") or {}, dict) else {},
+                )
+            )
+        return out
+
+    # Fallback: snapshot.principles list (common in your current snapshots)
+    principles = _get(snapshot, "principles", None)
+    if isinstance(principles, list) and len(principles) > 0:
+        out2: list[EvaluationSpec] = []
+        for p in principles:
+            if not isinstance(p, dict):
+                continue
+            pid = _none_if_blank(p.get("paradigm_id"))
+            prid = _none_if_blank(p.get("principle_id"))
+            if not pid or not prid:
+                continue
+            out2.append(EvaluationSpec(paradigm_id=str(pid), principle_id=str(prid)))
+        if out2:
+            return out2
+
+    # Final fallback
+    return [EvaluationSpec(paradigm_id="ict", principle_id="ict_all_windows")]
+
+
+# ---------------------------------------------------------------------------
+# Schema helpers
+# ---------------------------------------------------------------------------
+
+def _default_expr_for_type(col_name: str, col_type: str) -> pl.Expr:
+    if col_type == "string":
+        return pl.lit(None).cast(pl.Utf8).alias(col_name)
+    if col_type in ("int", "int64"):
+        return pl.lit(None).cast(pl.Int64).alias(col_name)
+    if col_type in ("double", "float", "float64"):
+        return pl.lit(None).cast(pl.Float64).alias(col_name)
+    if col_type == "boolean":
+        return pl.lit(False).alias(col_name)
+    if col_type == "timestamp":
+        return pl.lit(None).cast(polars_dtype(col_type)).alias(col_name)
+    return pl.lit(None).cast(pl.Utf8).alias(col_name)
+
+
+def _ensure_trade_paths_schema(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+
+    missing_exprs: list[pl.Expr] = []
+    existing = set(df.columns)
+    for name, typ in TRADE_PATHS_SCHEMA.columns.items():
+        if name not in existing:
+            missing_exprs.append(_default_expr_for_type(name, typ))
+
+    out = df if not missing_exprs else df.with_columns(missing_exprs)
+
+    # Stable partitions (Phase B)
+    if "candidate_id" in out.columns:
+        out = out.with_columns(pl.col("candidate_id").fill_null("∅"))
+        if "experiment_id" in out.columns:
+            out = out.with_columns(pl.col("experiment_id").fill_null("∅"))
+        else:
+            out = out.with_columns(pl.lit("∅").cast(pl.Utf8).alias("experiment_id"))
+    return out
+
+
+def _ensure_decisions_min_schema(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None:
+        return pl.DataFrame()
+    if df.is_empty():
+        return df
+
+    needed: dict[str, pl.Expr] = {
+        "snapshot_id": pl.lit(None).cast(pl.Utf8).alias("snapshot_id"),
+        "run_id": pl.lit(None).cast(pl.Utf8).alias("run_id"),
+        "mode": pl.lit(None).cast(pl.Utf8).alias("mode"),
+        "paradigm_id": pl.lit(None).cast(pl.Utf8).alias("paradigm_id"),
+        "principle_id": pl.lit(None).cast(pl.Utf8).alias("principle_id"),
+        "candidate_id": pl.lit("∅").cast(pl.Utf8).alias("candidate_id"),
+        "experiment_id": pl.lit("∅").cast(pl.Utf8).alias("experiment_id"),
+        "instrument": pl.lit(None).cast(pl.Utf8).alias("instrument"),
+        "trade_id": pl.lit(None).cast(pl.Utf8).alias("trade_id"),
+    }
+
+    exprs: list[pl.Expr] = []
+    cols = set(df.columns)
+    for k, e in needed.items():
+        if k not in cols:
+            exprs.append(e)
+
+    out = df if not exprs else df.with_columns(exprs)
+
+    # normalize candidate_id if present
+    if "candidate_id" in out.columns:
+        out = out.with_columns(pl.col("candidate_id").fill_null("∅"))
+
+    return out
+
+
+def _stamp_eval_identity(
+    df: pl.DataFrame,
+    *,
+    ctx_snapshot_id: str,
+    ctx_run_id: str,
+    ctx_mode: str,
+    eval_spec: EvaluationSpec,
+) -> pl.DataFrame:
+    if df is None:
+        return pl.DataFrame()
+    if df.is_empty():
+        return df
+
+    cand = _candidate_norm(eval_spec.candidate_id)
+    exp = _none_if_blank(eval_spec.experiment_id) or "∅"
+    exprs: list[pl.Expr] = [
+        pl.lit(ctx_snapshot_id).cast(pl.Utf8).alias("snapshot_id"),
+        pl.lit(ctx_run_id).cast(pl.Utf8).alias("run_id"),
+        pl.lit(ctx_mode).cast(pl.Utf8).alias("mode"),
+        pl.lit(eval_spec.paradigm_id).cast(pl.Utf8).alias("paradigm_id"),
+        pl.lit(eval_spec.principle_id).cast(pl.Utf8).alias("principle_id"),
+        pl.lit(cand).cast(pl.Utf8).alias("candidate_id"),
+    ]
+    # Phase B: always stamp experiment_id (partition-stable)
+    exprs.append(pl.lit(exp).cast(pl.Utf8).alias("experiment_id"))
+    return df.with_columns(exprs)
+
+
+# ---------------------------------------------------------------------------
+# Public entrypoint
+# ---------------------------------------------------------------------------
+
+def run(state: BatchState) -> BatchState:
+    """
+    Phase B hypotheses step: multi-evaluation dispatcher.
+
+    Inputs:
+      - 'windows'
+      - 'features'
+
+    Outputs:
+      - 'decisions_hypotheses' (long format)
+      - 'trade_paths' (long format)
+    """
+    windows = state.get("windows")
+    features = state.get("features")
+
+    if windows is None or windows.is_empty():
+        state.set("decisions_hypotheses", pl.DataFrame())
+        state.set("trade_paths", pl.DataFrame())
+        return state
+
+    snapshot = load_snapshot_manifest(state.ctx.snapshot_id)
+    principles_dir = _resolve_principles_dir(snapshot)
+
+    evals = _extract_evaluations(state, snapshot)
+
+    log.info(
+        "hypotheses_step: resolved %d evaluation(s) trading_day=%s cluster_id=%s",
+        len(evals),
+        state.key.trading_day.isoformat(),
+        state.key.cluster_id,
+    )
+
+    decisions_frames: list[pl.DataFrame] = []
+    trade_paths_frames: list[pl.DataFrame] = []
+
+    for ev in evals:
+        base_cfg = _load_principle_cfg(snapshot, principles_dir, ev.paradigm_id, ev.principle_id)
+        cfg = _merge_params(base_cfg, ev.params)
+
+        builder = get_hypotheses_builder(ev.paradigm_id, ev.principle_id)
+        dec_df, tp_df = builder(state.ctx, windows, features, cfg)
+
+        dec_df = _stamp_eval_identity(
+            dec_df,
+            ctx_snapshot_id=state.ctx.snapshot_id,
+            ctx_run_id=state.ctx.run_id,
+            ctx_mode=state.ctx.mode,
+            eval_spec=ev,
+        )
+        dec_df = _ensure_decisions_min_schema(dec_df)
+
+        tp_df = _stamp_eval_identity(
+            tp_df,
+            ctx_snapshot_id=state.ctx.snapshot_id,
+            ctx_run_id=state.ctx.run_id,
+            ctx_mode=state.ctx.mode,
+            eval_spec=ev,
+        )
+
+        if not dec_df.is_empty():
+            for c in ["instrument", "trade_id"]:
+                if c not in dec_df.columns:
+                    raise ValueError(
+                        f"hypotheses builder output missing required column {c!r} for {ev.paradigm_id}/{ev.principle_id}"
+                    )
+
+        if tp_df is not None and not tp_df.is_empty():
+            for c in ["instrument", "trade_id", "anchor_tf", "tf_entry", "entry_ts", "side"]:
+                if c not in tp_df.columns:
+                    raise ValueError(
+                        f"trade_paths output missing required column {c!r} for {ev.paradigm_id}/{ev.principle_id}"
+                    )
+
+            # Keep trade_paths schema-complete early (reports_step will validate again if needed)
+            tp_df = _ensure_trade_paths_schema(tp_df)
+
+        decisions_frames.append(dec_df)
+        if tp_df is not None and not tp_df.is_empty():
+            trade_paths_frames.append(tp_df)
+
+        log.info(
+            "hypotheses_step: eval=%s/%s decisions=%d trade_paths=%d",
+            ev.paradigm_id,
+            ev.principle_id,
+            0 if dec_df is None else dec_df.height,
+            0 if tp_df is None else tp_df.height,
+        )
+
+    decisions_hypotheses_df = pl.concat(decisions_frames, how="diagonal") if decisions_frames else pl.DataFrame()
+    trade_paths_df = pl.concat(trade_paths_frames, how="diagonal") if trade_paths_frames else pl.DataFrame()
+
+    state.set("decisions_hypotheses", decisions_hypotheses_df)
+    state.set("trade_paths", trade_paths_df)
+
+    trading_day: date = state.key.trading_day
+
+    # Persist decisions (writer partitions by eval identity if those cols exist)
+    if decisions_hypotheses_df is not None and not decisions_hypotheses_df.is_empty():
+        write_decisions_for_stage(
+            ctx=state.ctx,
+            trading_day=trading_day,
+            stage="hypotheses",
+            decisions_df=decisions_hypotheses_df,
+        )
+    # Persist trade_paths (contract owner boundary for hypotheses step).
+    if trade_paths_df is not None and not trade_paths_df.is_empty():
+        for df_part in trade_paths_df.partition_by("instrument", as_dict=False, maintain_order=True):
+            instrument = str(df_part["instrument"][0])
+            write_trade_paths_for_day(
+                ctx=state.ctx,
+                df=df_part,
+                instrument=instrument,
+                trading_day=trading_day,
+                sandbox=False,
+            )
+
+    return state

@@ -1,0 +1,71 @@
+schema_version: 1
+generated_by: manual_seed
+
+paradigms:
+  dev_baseline:
+    tables:
+      "data/features":
+        families:
+
+          ict_struct:
+            ict_struct_swing_high:
+              enabled: true
+              kind: binary_flag
+              role: entry_signal
+              thresholds:
+                use_as_long_signal: true
+                use_as_short_signal: false
+
+            ict_struct_swing_low:
+              enabled: true
+              kind: binary_flag
+              role: entry_signal
+              thresholds:
+                use_as_long_signal: false
+                use_as_short_signal: true
+
+            ict_struct_pd_index:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_liquidity_tag:
+              enabled: true
+              thresholds: {}
+
+          stat_ts:
+            stat_ts_vol_zscore:
+              enabled: true
+              kind: zscore
+              role: volatility_filter
+              thresholds:
+                abs_min_for_signal: 1.0     # from windows.selection_params.vol_z_abs_min
+                abs_max_clip: 3.0
+
+            stat_ts_return_zscore:
+              enabled: true
+              kind: zscore
+              role: return_filter
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            stat_ts_range_zscore:
+              enabled: false
+              kind: zscore
+              role: range_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+          macro_calendar:
+            macro_is_blackout:
+              enabled: true
+              kind: binary_flag
+              role: compliance_filter
+              thresholds: {}
+
+            macro_blackout_max_impact:
+              enabled: true
+              kind: ordinal
+              role: compliance_context
+              thresholds: {}

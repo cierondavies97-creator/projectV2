@@ -1,0 +1,24 @@
+paradigm_id: "ict"
+enabled: true
+maturity: "experimental"
+description: "ICT structural / session paradigm"
+default_principle_id: "ict_all_windows"
+
+feature_families:
+  - "ict_struct"
+  - "stat_ts"
+  - "macro_calendar"
+
+critic:
+  impl: "ict_basic"
+  score_components:
+    - name: "rr_expectation"
+      params: {}
+    - name: "session_confluence"
+      params: {}
+
+pretrade:
+  macro_policy: "default_macro_blackout"
+
+portfolio:
+  profile: "ict_intraday_default"
