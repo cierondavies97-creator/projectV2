@@ -97,20 +97,33 @@ ta_trend:
 ta_vol:
   table: "data/features"
   enabled: true
-  maturity: "experimental"
-  threshold_keys:
-    - atr_period
-    - ret_window
-  description: "ATR and simple volatility/range statistics."
+  maturity: "stable"
+  description: "Volatility primitives on anchor bars: ATR (Wilder RMA), rolling return std, rolling mean range. Provides both atr_value and ta_vol__atr for compatibility."
   primary_key: [instrument, anchor_tf, ts]
+
+  # Trainers may tune ONLY these knobs.
+  threshold_keys:
+    - atr_period                 # Wilder ATR period (RMA smoothing), default 14
+    - atr_smoothing              # "wilder" | "sma" (deterministic), default "wilder"
+    - ret_window                 # window for ret std / range mean, default 20
+    - ret_type                   # "pct" | "log" (deterministic), default "pct"
+    - min_periods_atr            # minimum periods for ATR init, default 1
+    - min_periods_ret_std        # minimum periods for ret std, default 2
+    - min_periods_range_mean     # minimum periods for range mean, default 1
+
   columns:
-    instrument: { role: key, dtype: string }
-    anchor_tf:  { role: key, dtype: string }
-    ts:         { role: key, dtype: timestamp }
-    atr_value:          { role: feature, dtype: double }  # canonical ATR value
-    ta_vol__atr:        { role: feature, dtype: double }  # legacy name
-    ta_vol__ret1_std:   { role: feature, dtype: double }
-    ta_vol__range_mean: { role: feature, dtype: double }
+    instrument:     { role: key, dtype: string }
+    anchor_tf:      { role: key, dtype: string }
+    ts:             { role: key, dtype: timestamp }
+
+    # ATR outputs
+    atr_value:      { role: feature, dtype: double }  # canonical ATR
+    ta_vol__atr:    { role: feature, dtype: double }  # alias for compatibility
+
+    # Rolling vol/range summaries
+    ta_vol__ret1_std:    { role: feature, dtype: double }  # rolling std of 1-bar returns
+    ta_vol__range_mean:  { role: feature, dtype: double }  # rolling mean of (high-low)
+
 
 
 # ------------------------------------------------------------------------
@@ -477,23 +490,22 @@ macro_regime:
 trade_path_class:
   table: "data/trade_paths"
   enabled: true
-  maturity: "experimental"
+  maturity: "stable"
   threshold_keys:
     - path_cluster_n_clusters
     - path_shape_time_to_1R_bars_max
-    - path_mae_R_bucket_edges_json   # JSON array string stored in features_auto; interpreted by classifier
+    - path_mae_R_bucket_edges_json   # JSON array string; used for mae_R_bucket labeling
   description: "Trade-path shape and path-filter tags (equity-curve descriptors and clustering outputs)."
   primary_key: [trade_id]
   columns:
     trade_id:   { role: key, dtype: string }
 
-    path_shape:             { role: feature, dtype: string }  # straight_runner|dip_then_go|grind_then_go|straight_fail|chop_and_die|...
+    path_shape:             { role: feature, dtype: string }  # straight_runner|dip_then_go|grind_then_go|straight_fail|chop_and_die|unknown
     path_cluster_id:        { role: feature, dtype: string }
     path_family_id:         { role: feature, dtype: string }  # coarse family label
     path_filter_primary:    { role: feature, dtype: string }
     path_filter_tags_json:  { role: feature, dtype: string }  # JSON array string
 
-    # Optional path diagnostics (nullable until implemented)
     time_to_1R_bars:        { role: feature, dtype: int }
     time_to_2R_bars:        { role: feature, dtype: int }
     mae_R:                  { role: feature, dtype: double }
