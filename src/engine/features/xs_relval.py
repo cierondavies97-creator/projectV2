@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-import polars as pl
+import polars as plhttps://github.com/cierondavies97-creator/projectV2/pulls
 
 from engine.features import FeatureBuildContext
 from engine.features._shared import safe_div
@@ -78,14 +78,14 @@ def build_feature_frame(
     carry_rank = safe_div(ret_rank - 1, count - 1, default=0.0).alias("xs_relval_carry_rank")
 
     momo = pl.col("_ret").rolling_mean(window_size=5, min_periods=2).over("instrument").alias("_momo")
+    momo_rank = safe_div(pl.col("_momo").rank("average").over(by_ts) - 1, count - 1, default=0.0).alias("xs_relval_momo_rank")
 
     out = c.with_columns(
         spread_level,
         spread_z,
         momo,
         carry_rank,
-    ).with_columns(
-        safe_div(pl.col("_momo").rank("average").over(by_ts) - 1, count - 1, default=0.0).alias("xs_relval_momo_rank")
+        momo_rank,
     ).select(
         "instrument",
         "ts",

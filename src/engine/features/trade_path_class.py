@@ -80,6 +80,9 @@ def build_feature_frame(
         .alias("path_cluster_id")
     )
 
+    path_family = pl.col("path_shape").alias("path_family_id")
+    filter_primary = pl.col("path_shape").alias("path_filter_primary")
+
     time_to_1r = pl.col("time_to_1R_bars").cast(pl.Int64) if "time_to_1R_bars" in df.columns else pl.lit(None).cast(pl.Int64)
     time_to_2r = pl.col("time_to_2R_bars").cast(pl.Int64) if "time_to_2R_bars" in df.columns else pl.lit(None).cast(pl.Int64)
     mfe_r = pl.col("mfe_R").cast(pl.Float64) if "mfe_R" in df.columns else pl.lit(None).cast(pl.Float64)
@@ -101,6 +104,8 @@ def build_feature_frame(
     out = base.with_columns(
         path_shape,
         cluster_id,
+        path_family,
+        filter_primary,
         pl.lit("[]").alias("path_filter_tags_json"),
         time_to_1r.alias("time_to_1R_bars"),
         time_to_2r.alias("time_to_2R_bars"),
@@ -108,9 +113,6 @@ def build_feature_frame(
         mae_bucket,
         mfe_r.alias("mfe_R"),
         exit_reason.alias("exit_reason"),
-    ).with_columns(
-        pl.col("path_shape").alias("path_family_id"),
-        pl.col("path_shape").alias("path_filter_primary"),
     )
 
     log.info("trade_path_class: built rows=%d clusters=%d", out.height, n_clusters)
