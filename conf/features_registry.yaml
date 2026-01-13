@@ -468,11 +468,11 @@ pcra_bar:
     - ofi_strong_sell_cut
     - ofi_strong_buy_cut
   description: "PCrA bar-level orderflow/microstructure buckets and supporting values."
-  primary_key: [instrument, anchor_tf, anchor_ts]
+  primary_key: [instrument, anchor_tf, pcr_window_ts]
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
-    anchor_ts:  { role: key, dtype: timestamp }
+    pcr_window_ts:  { role: key, dtype: timestamp }
 
     pcr_ofi_value:        { role: feature, dtype: double }
     pcr_ofi_bucket:       { role: feature, dtype: string }   # strong_buy|balanced|strong_sell
@@ -495,11 +495,11 @@ pcra_tick:
     - tick_absorption_range_ticks_threshold
     - tick_delta_z_strong
   description: "PCrA tick-level footprint/sweep/absorption features (derived from tick/footprint inputs)."
-  primary_key: [instrument, anchor_tf, anchor_ts]
+  primary_key: [instrument, anchor_tf, pcr_window_ts]
   columns:
     instrument: { role: key, dtype: string }
     anchor_tf:  { role: key, dtype: string }
-    anchor_ts:  { role: key, dtype: timestamp }
+    pcr_window_ts:  { role: key, dtype: timestamp }
 
     pcr_tick_total_volume_units:        { role: feature, dtype: double }
     pcr_tick_delta_units:               { role: feature, dtype: double }
