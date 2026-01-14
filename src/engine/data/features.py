@@ -63,7 +63,10 @@ def validate_features_frame(df: pl.DataFrame) -> None:
         return
     missing = [c for c in ("instrument", "anchor_tf", "ts") if c not in df.columns]
     if missing:
-        raise ValueError(f"data/features frame missing key columns: {missing}")
+        raise ValueError(
+            "data/features frame missing key columns: "
+            f"{missing} columns_present={sorted(df.columns)} rows={df.height}"
+        )
 
 
 def write_features_for_instrument_tf_day(
