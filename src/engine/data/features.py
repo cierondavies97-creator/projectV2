@@ -5,69 +5,92 @@ from datetime import date
 import polars as pl
 
 from engine.core.ids import RunContext
+from engine.core.schema import enforce_table
 from engine.io.parquet_io import write_parquet
 from engine.io.paths import features_dir
 
 
-def _ensure_identity_columns(ctx: RunContext, trading_day: date, df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Ensure core identity columns exist for features tables.
-    Adds dt (preferred) and trading_day (legacy-friendly).
-    """
-    if df is None or df.is_empty():
-        return pl.DataFrame()
+# -----------------------------------------------------------------------------
+# data/features writer
+#
+# Contract:
+# - Always writes a parquet file for the requested partition (even if df is empty)
+# - Adds engine identity columns (snapshot_id/run_id/mode/dt) if missing
+# - Expands df to full schema contract via enforce_table("features")
+# -----------------------------------------------------------------------------
 
-    out = df
-    exprs: list[pl.Expr] = []
+
+def _as_str(v: object) -> str:
+    if v is None:
+        return ""
+    # handle enums / pydantic types that carry a `.value`
+    val = getattr(v, "value", None)
+    return str(val) if val is not None else str(v)
+
+
+def _ensure_identity_columns(ctx: RunContext, trading_day: date, df: pl.DataFrame) -> pl.DataFrame:
+    out = df if df is not None else pl.DataFrame()
+
+    add_exprs: list[pl.Expr] = []
 
     if "snapshot_id" not in out.columns:
-        exprs.append(pl.lit(ctx.snapshot_id).alias("snapshot_id"))
+        add_exprs.append(pl.lit(_as_str(getattr(ctx, "snapshot_id", ""))).alias("snapshot_id"))
     if "run_id" not in out.columns:
-        exprs.append(pl.lit(ctx.run_id).alias("run_id"))
+        add_exprs.append(pl.lit(_as_str(getattr(ctx, "run_id", ""))).alias("run_id"))
     if "mode" not in out.columns:
-        exprs.append(pl.lit(ctx.mode).alias("mode"))
+        add_exprs.append(pl.lit(_as_str(getattr(ctx, "mode", ""))).alias("mode"))
 
+    # Canonical partition key
     if "dt" not in out.columns:
-        exprs.append(pl.lit(trading_day).cast(pl.Date).alias("dt"))
-    if "trading_day" not in out.columns:
-        exprs.append(pl.lit(trading_day).cast(pl.Date).alias("trading_day"))
+        add_exprs.append(pl.lit(trading_day).cast(pl.Date).alias("dt"))
 
-    if exprs:
-        out = out.with_columns(exprs)
+    # Legacy-friendly (optional). Keep if present; add if absent.
+    if "trading_day" not in out.columns:
+        add_exprs.append(pl.lit(trading_day).cast(pl.Date).alias("trading_day"))
+
+    if add_exprs:
+        out = out.with_columns(add_exprs)
 
     return out
 
 
 def validate_features_frame(df: pl.DataFrame) -> None:
     """
-    Minimal validation for features frames before writing.
+    Minimal validation: when df has rows, require the keyed columns exist.
+    Schema enforcement will add missing columns, but keys should exist for non-empty frames.
     """
     if df is None or df.is_empty():
         return
-
-    required = ["instrument", "anchor_tf", "ts"]
-    missing = [c for c in required if c not in df.columns]
+    missing = [c for c in ("instrument", "anchor_tf", "ts") if c not in df.columns]
     if missing:
-        raise ValueError(f"features frame is missing required columns: {missing}")
+        raise ValueError(f"data/features frame missing key columns: {missing}")
 
 
 def write_features_for_instrument_tf_day(
+    *,
     ctx: RunContext,
-    df: pl.DataFrame,
+    df: pl.DataFrame | None,
     instrument: str,
     anchor_tf: str,
     trading_day: date,
-    *,
-    sandbox: bool = False,
+    sandbox: bool,
 ) -> None:
     """
-    Write features for a single (instrument, anchor_tf, trading_day) to Parquet.
-    """
-    if df is None or df.is_empty():
-        return
+    Write one parquet file for a single (instrument, anchor_tf, trading_day) partition.
 
-    validate_features_frame(df)
-    df = _ensure_identity_columns(ctx, trading_day, df)
+    The caller may pass an empty frame; we will still materialize an empty parquet with
+    the full schema contract (useful for reproducible auditing/drift detection).
+    """
+    out = df if df is not None else pl.DataFrame()
+
+    # Ensure identity columns, then contract-expand to include all declared schema cols.
+    out = _ensure_identity_columns(ctx, trading_day, out)
+
+    # Validate only when non-empty
+    validate_features_frame(out)
+
+    # Expand to compiled contract (adds typed NULL placeholders)
+    out = enforce_table(out, "features", allow_extra=True, reorder=True)
 
     out_dir = features_dir(
         ctx=ctx,
@@ -76,4 +99,4 @@ def write_features_for_instrument_tf_day(
         anchor_tf=anchor_tf,
         sandbox=sandbox,
     )
-    write_parquet(df, out_dir, file_name="0000.parquet")
+    write_parquet(out, out_dir, file_name="0000.parquet")

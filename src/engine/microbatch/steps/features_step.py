@@ -454,8 +454,20 @@ def run(state: BatchState) -> BatchState:
                 trading_day=state.key.trading_day,
                 sandbox=False,
             )
+    else:
+        # Materialize empty contract files for reproducibility (missing-data/debug visibility).
+        for instrument in plan.instruments:
+            for anchor_tf in plan.anchor_tfs:
+                write_features_for_instrument_tf_day(
+                    ctx=state.ctx,
+                    df=pl.DataFrame(),
+                    instrument=str(instrument),
+                    anchor_tf=str(anchor_tf),
+                    trading_day=state.key.trading_day,
+                    sandbox=False,
+                )
 
-    # Persist: data/zones_state
+# Persist: data/zones_state
     if zones_state_df is not None and not zones_state_df.is_empty():
         for (instrument, anchor_tf), grp in zones_state_df.group_by(["instrument", "anchor_tf"], maintain_order=True):
             write_zones_state_for_instrument_tf_day(
@@ -466,8 +478,20 @@ def run(state: BatchState) -> BatchState:
                 trading_day=state.key.trading_day,
                 sandbox=False,
             )
+    else:
+        # Materialize empty contract files (zone discovery may legitimately yield no rows).
+        for instrument in plan.instruments:
+            for anchor_tf in plan.anchor_tfs:
+                write_zones_state_for_instrument_tf_day(
+                    ctx=state.ctx,
+                    df=pl.DataFrame(),
+                    instrument=str(instrument),
+                    anchor_tf=str(anchor_tf),
+                    trading_day=state.key.trading_day,
+                    sandbox=False,
+                )
 
-    # Persist: data/pcr_a
+# Persist: data/pcr_a
     if pcra_df is not None and not pcra_df.is_empty():
         for (instrument, anchor_tf), grp in pcra_df.group_by(["instrument", "anchor_tf"], maintain_order=True):
             write_pcra_for_instrument_tf_day(
@@ -478,5 +502,17 @@ def run(state: BatchState) -> BatchState:
                 trading_day=state.key.trading_day,
                 sandbox=False,
             )
+    else:
+        # Materialize empty contract files (if tick/footprint inputs are missing).
+        for instrument in plan.instruments:
+            for anchor_tf in plan.anchor_tfs:
+                write_pcra_for_instrument_tf_day(
+                    ctx=state.ctx,
+                    df=pl.DataFrame(),
+                    instrument=str(instrument),
+                    anchor_tf=str(anchor_tf),
+                    trading_day=state.key.trading_day,
+                    sandbox=False,
+                )
 
     return state

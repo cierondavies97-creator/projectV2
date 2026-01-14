@@ -42,6 +42,14 @@ def build_feature_frame(
 
     Table: data/zones_state
     Keys : instrument, anchor_tf, zone_id, ts
+
+    Deterministic Phase-A proxy:
+      - POC price proxy = bar mid (high+low)/2
+      - POC relative position = (mid-low)/(high-low) in [0,1]
+      - Total volume = bar volume (or 0 if absent)
+      - Upper/Lower volume proxy = 50/50 split (kept simple)
+      - Skew proxy = (close-mid)/(high-low)
+      - HVN/LVN proxy = compare total volume to rolling mean volume
     """
     if candles is None or candles.is_empty():
         log.warning("vp_core: candles empty; returning empty keyed frame")
@@ -60,6 +68,12 @@ def build_feature_frame(
     thin_vol_cut = float(fam_cfg.get("vp_thin_total_volume_cut_units", 0.0))
     skew_strong_cut = float(fam_cfg.get("vp_skew_abs_strong_cut", 0.35))
 
+    # Optional hardening knobs (safe defaults if not in registry yet)
+    mean_vol_window = int(fam_cfg.get("vp_mean_volume_window_bars", 50))
+    mean_vol_min_periods = int(fam_cfg.get("vp_mean_volume_min_periods", 10))
+    mean_vol_window = max(1, mean_vol_window)
+    mean_vol_min_periods = max(1, min(mean_vol_window, mean_vol_min_periods))
+
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
     if not anchor_tfs:
@@ -74,11 +88,14 @@ def build_feature_frame(
             pl.col("high").cast(pl.Float64),
             pl.col("low").cast(pl.Float64),
             pl.col("close").cast(pl.Float64),
-            pl.col("volume").cast(pl.Float64).alias("_volume") if "volume" in candles.columns else pl.lit(0.0).alias("_volume"),
+            (pl.col("volume").cast(pl.Float64) if "volume" in candles.columns else pl.lit(0.0, dtype=pl.Float64)).alias("_volume"),
         )
         .drop_nulls(["instrument", "tf", "ts"])
         .sort(["instrument", "tf", "ts"])
+        .unique(subset=["instrument", "tf", "ts"], keep="last")
     )
+
+    eps = 1e-12
 
     out_frames: list[pl.DataFrame] = []
     for anchor_tf in anchor_tfs:
@@ -92,24 +109,43 @@ def build_feature_frame(
             pl.concat_str([pl.lit("vp_core"), pl.col("instrument"), pl.lit(tf_str)], separator="::").alias("zone_id"),
         )
 
-        mid = ((pl.col("high") + pl.col("low")) / pl.lit(2.0)).alias("_mid")
-        rng = (pl.col("high") - pl.col("low")).alias("_range")
-        df = df.with_columns(mid, rng)
+        df = df.with_columns(
+            ((pl.col("high") + pl.col("low")) / 2.0).alias("_mid"),
+            (pl.col("high") - pl.col("low")).alias("_range"),
+        )
 
-        total_vol = pl.col("_volume").alias("zone_vp_total_volume_units")
-        poc_price = pl.col("_mid").alias("zone_vp_poc_price")
-        rel_pos = pl.when(pl.col("_range") == 0).then(pl.lit(0.5)).otherwise((pl.col("zone_vp_poc_price") - pl.col("low")) / pl.col("_range")).alias("zone_vp_poc_relative_position")
-        vol_lower = (pl.col("_volume") * 0.5).alias("zone_vp_volume_lower_units")
-        vol_upper = (pl.col("_volume") * 0.5).alias("zone_vp_volume_upper_units")
-        skew = pl.when(pl.col("_range") == 0).then(pl.lit(0.0)).otherwise((pl.col("close") - pl.col("_mid")) / pl.col("_range")).alias("zone_vp_skew")
+        # IMPORTANT: rel_pos uses _mid directly; do NOT reference zone_vp_poc_price before it exists.
+        df = df.with_columns(
+            pl.col("_volume").alias("zone_vp_total_volume_units"),
+            pl.col("_mid").alias("zone_vp_poc_price"),
+            pl.when(pl.col("_range") == 0)
+            .then(pl.lit(0.5))
+            .otherwise(((pl.col("_mid") - pl.col("low")) / pl.max_horizontal(pl.col("_range"), pl.lit(eps))).clip(0.0, 1.0))
+            .alias("zone_vp_poc_relative_position"),
+            (pl.col("_volume") * 0.5).alias("zone_vp_volume_lower_units"),
+            (pl.col("_volume") * 0.5).alias("zone_vp_volume_upper_units"),
+            pl.when(pl.col("_range") == 0)
+            .then(pl.lit(0.0))
+            .otherwise((pl.col("close") - pl.col("_mid")) / pl.max_horizontal(pl.col("_range"), pl.lit(eps)))
+            .alias("zone_vp_skew"),
+        )
 
-        df = df.with_columns(total_vol, poc_price, rel_pos, vol_lower, vol_upper, skew)
+        mean_vol = (
+            pl.col("zone_vp_total_volume_units")
+            .rolling_mean(window_size=mean_vol_window, min_periods=mean_vol_min_periods)
+            .over("instrument")
+        )
 
-        mean_vol = pl.col("zone_vp_total_volume_units").rolling_mean(window_size=50, min_periods=10).over("instrument")
-        hvn_flag = (pl.col("zone_vp_total_volume_units") >= mean_vol * pl.lit(hvn_lvn_ratio_cut)).alias("zone_vp_hvn_flag")
-        lvn_flag = (pl.col("zone_vp_total_volume_units") <= mean_vol / pl.lit(hvn_lvn_ratio_cut)).alias("zone_vp_lvn_flag")
-
-        df = df.with_columns(hvn_flag, lvn_flag)
+        df = df.with_columns(
+            (pl.col("zone_vp_total_volume_units") >= mean_vol * pl.lit(hvn_lvn_ratio_cut))
+            .fill_null(False)
+            .cast(pl.Boolean)
+            .alias("zone_vp_hvn_flag"),
+            (pl.col("zone_vp_total_volume_units") <= mean_vol / pl.lit(hvn_lvn_ratio_cut))
+            .fill_null(False)
+            .cast(pl.Boolean)
+            .alias("zone_vp_lvn_flag"),
+        )
 
         df = df.with_columns(
             pl.when(pl.col("zone_vp_total_volume_units") <= pl.lit(thin_vol_cut))
@@ -142,22 +178,7 @@ def build_feature_frame(
         )
 
         out_frames.append(
-            df.select(
-                "instrument",
-                "anchor_tf",
-                "zone_id",
-                "ts",
-                "zone_vp_total_volume_units",
-                "zone_vp_poc_price",
-                "zone_vp_poc_relative_position",
-                "zone_vp_volume_lower_units",
-                "zone_vp_volume_upper_units",
-                "zone_vp_skew",
-                "zone_vp_hvn_flag",
-                "zone_vp_lvn_flag",
-                "zone_vp_type",
-                "zone_vp_type_bucket",
-            )
+            df.select(_empty_keyed_frame().columns)
         )
 
     if not out_frames:
