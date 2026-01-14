@@ -5,6 +5,7 @@ from datetime import date
 import polars as pl
 
 from engine.core.ids import RunContext
+from engine.core.schema import enforce_table
 from engine.core.timegrid import validate_anchor_grid
 from engine.io.parquet_io import write_parquet
 from engine.io.paths import zones_state_dir
@@ -113,9 +114,6 @@ def _ensure_identity_columns(
     """
     Ensure core identity columns exist for zones_state tables.
     """
-    if df.is_empty():
-        return df
-
     exprs: list[pl.Expr] = []
     if "snapshot_id" not in df.columns:
         exprs.append(pl.lit(ctx.snapshot_id).alias("snapshot_id"))
@@ -123,6 +121,10 @@ def _ensure_identity_columns(
         exprs.append(pl.lit(ctx.run_id).alias("run_id"))
     if "mode" not in df.columns:
         exprs.append(pl.lit(ctx.mode).alias("mode"))
+    if "dt" not in df.columns:
+        exprs.append(pl.lit(trading_day).cast(pl.Date).alias("dt"))
+    else:
+        exprs.append(pl.col("dt").cast(pl.Date, strict=False).alias("dt"))
     if "trading_day" not in df.columns:
         exprs.append(pl.lit(trading_day).alias("trading_day"))
 
@@ -160,13 +162,13 @@ def write_zones_state_for_instrument_tf_day(
       - Ensure identity columns
       - Write to: data/zones_state/run_id=.../instrument=.../anchor_tf=.../dt=.../0000.parquet
     """
-    if df.is_empty():
-        return
-
-    df2 = _canonicalize_zones_state_frame(df)
-    validate_zones_state_frame(df2, enforce_anchor_grid=enforce_anchor_grid)
+    df2 = df if df is not None else pl.DataFrame()
+    if not df2.is_empty():
+        df2 = _canonicalize_zones_state_frame(df2)
+        validate_zones_state_frame(df2, enforce_anchor_grid=enforce_anchor_grid)
 
     df2 = _ensure_identity_columns(ctx, trading_day, df2)
+    df2 = enforce_table(df2, "zones_state", allow_extra=True, reorder=True)
 
     out_dir = zones_state_dir(
         ctx=ctx,
