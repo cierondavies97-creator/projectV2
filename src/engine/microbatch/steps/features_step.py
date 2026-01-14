@@ -313,7 +313,8 @@ def _build_table_for_cluster(
         if missing_keys:
             raise ValueError(
                 f"Feature family '{family.family_id}' did not produce required key "
-                f"columns {missing_keys} for table {spec.table_name} keys={spec.key_cols}"
+                f"columns {missing_keys} for table {spec.table_name} keys={spec.key_cols}. "
+                f"columns_present={sorted(df.columns)}"
             )
 
         # Key dtype normalization + strict day scoping
