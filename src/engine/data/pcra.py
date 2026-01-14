@@ -5,6 +5,7 @@ from datetime import date
 import polars as pl
 
 from engine.core.ids import RunContext
+from engine.core.schema import enforce_table
 from engine.io.parquet_io import write_parquet
 from engine.io.paths import pcra_dir
 
@@ -17,9 +18,6 @@ def _ensure_identity_columns(
     """
     Ensure core identity columns exist for pcr_a tables.
     """
-    if df.is_empty():
-        return df
-
     exprs: list[pl.Expr] = []
 
     if "snapshot_id" not in df.columns:
@@ -28,6 +26,10 @@ def _ensure_identity_columns(
         exprs.append(pl.lit(ctx.run_id).alias("run_id"))
     if "mode" not in df.columns:
         exprs.append(pl.lit(ctx.mode).alias("mode"))
+    if "dt" not in df.columns:
+        exprs.append(pl.lit(trading_day).cast(pl.Date).alias("dt"))
+    else:
+        exprs.append(pl.col("dt").cast(pl.Date, strict=False).alias("dt"))
     if "trading_day" not in df.columns:
         exprs.append(pl.lit(trading_day).alias("trading_day"))
 
@@ -62,11 +64,11 @@ def write_pcra_for_instrument_tf_day(
     """
     Write pcr_a rows for a single (instrument, anchor_tf, trading_day).
     """
-    if df.is_empty():
-        return
-
-    validate_pcra_frame(df)
-    df = _ensure_identity_columns(ctx, trading_day, df)
+    df2 = df if df is not None else pl.DataFrame()
+    if not df2.is_empty():
+        validate_pcra_frame(df2)
+    df2 = _ensure_identity_columns(ctx, trading_day, df2)
+    df2 = enforce_table(df2, "pcr_a", allow_extra=True, reorder=True)
 
     out_dir = pcra_dir(
         ctx=ctx,
@@ -77,4 +79,4 @@ def write_pcra_for_instrument_tf_day(
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "0000.parquet"
-    write_parquet(df, out_path.parent, file_name=out_path.name)
+    write_parquet(df2, out_path.parent, file_name=out_path.name)
