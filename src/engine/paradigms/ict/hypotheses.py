@@ -7,6 +7,7 @@ import polars as pl
 
 from engine.config.features_auto import get_threshold_float, load_features_auto
 from engine.core.schema import TRADE_PATHS_SCHEMA
+from engine.core.timegrid import tf_to_truncate_rule
 from engine.paradigms.registry import register_hypotheses_builder
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,29 @@ def _ensure_trade_paths_schema(df: pl.DataFrame) -> pl.DataFrame:
         out = out.with_columns(cast_exprs)
 
     return out
+
+
+def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame() if df is None else df
+    if "anchor_tf" not in df.columns or "anchor_ts" not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (anchor_tf,), grp in df.group_by(["anchor_tf"], maintain_order=True):
+        if anchor_tf is None:
+            frames.append(grp)
+            continue
+        rule = tf_to_truncate_rule(str(anchor_tf))
+        frames.append(
+            grp.with_columns(
+                pl.col("anchor_ts")
+                .cast(pl.Datetime("us"), strict=False)
+                .dt.truncate(rule)
+                .alias("anchor_ts")
+            )
+        )
+    return pl.concat(frames, how="vertical") if frames else df
 
 
 # -----------------------------------------------------------------------------
@@ -276,8 +300,8 @@ def build_ict_hypotheses(
     run_id = str(getattr(ctx, "run_id", "") or "")
     mode = str(getattr(ctx, "mode", "") or "")
 
-    # Ensure anchor_ts is datetime for deterministic formatting
-    selected = selected.with_columns(pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"))
+    # Ensure anchor_ts is datetime and on-grid for deterministic formatting
+    selected = _truncate_anchor_ts_by_tf(selected)
 
     # trade_id = "{run_id}-{instrument}-{anchor_tf}-{YYYYMMDDTHHMMSS}"
     selected = selected.with_columns(

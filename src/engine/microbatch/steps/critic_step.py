@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 import polars as pl
 
+from engine.core.timegrid import tf_to_truncate_rule
 from engine.data.decisions import write_decisions_for_stage
 from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
@@ -114,6 +115,29 @@ def _normalize_eval_cols(df: pl.DataFrame) -> pl.DataFrame:
     return out
 
 
+def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+    if "anchor_tf" not in df.columns or "anchor_ts" not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (anchor_tf,), grp in df.group_by(["anchor_tf"], maintain_order=True):
+        if anchor_tf is None:
+            frames.append(grp)
+            continue
+        rule = tf_to_truncate_rule(str(anchor_tf))
+        frames.append(
+            grp.with_columns(
+                pl.col("anchor_ts")
+                .cast(pl.Datetime("us"), strict=False)
+                .dt.truncate(rule)
+                .alias("anchor_ts")
+            )
+        )
+    return pl.concat(frames, how="vertical") if frames else df
+
+
 def _ensure_decisions_critic_surface(ctx, decisions_critic: pl.DataFrame, trade_paths_group: pl.DataFrame) -> pl.DataFrame:
     """
     Ensure decisions_critic has the minimum required columns to persist and to join back to trade_paths.
@@ -176,7 +200,7 @@ def _ensure_decisions_critic_surface(ctx, decisions_critic: pl.DataFrame, trade_
         if c in out.columns:
             out = out.with_columns(pl.col(c).cast(pl.Utf8))
 
-    return out
+    return _truncate_anchor_ts_by_tf(out)
 
 
 def _noop_critic_for_group(ctx, trade_paths_group: pl.DataFrame, decisions_hypotheses_group: pl.DataFrame, critic_cfg: dict[str, Any]) -> pl.DataFrame:
