@@ -485,6 +485,7 @@ DECISIONS_SCHEMA = TableSchema(
         "experiment_id": "string",
         "instrument": "string",
         "trade_id": "string",
+        "decision_ts": "timestamp",
     },
 )
 
