@@ -180,7 +180,7 @@ def _join_windows_with_features(windows: pl.DataFrame, features: pl.DataFrame) -
 # Candidate selection
 # -----------------------------------------------------------------------------
 
-def _select_candidate_windows(df: pl.DataFrame) -> pl.DataFrame:
+def _select_candidate_windows_for_group(df: pl.DataFrame) -> pl.DataFrame:
     """
     Downsample candidate windows deterministically.
 
@@ -201,6 +201,33 @@ def _select_candidate_windows(df: pl.DataFrame) -> pl.DataFrame:
             pass
 
     return df.with_row_index("row_nr").filter(pl.col("row_nr") % 12 == 0).drop("row_nr")
+
+
+def _select_candidate_windows(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Downsample candidate windows deterministically.
+
+    Preference:
+      - If anchor_ts exists: keep top-of-hour bars (minute==0) when present.
+      - Otherwise: take every 12th row (e.g., for M5 -> hourly proxy).
+    """
+    if df is None or df.is_empty():
+        return pl.DataFrame() if df is None else df
+
+    if "anchor_tf" not in df.columns:
+        return _select_candidate_windows_for_group(df)
+
+    out: list[pl.DataFrame] = []
+    for tf in df.select(pl.col("anchor_tf").cast(pl.Utf8, strict=False).unique()).to_series().to_list():
+        group = df.filter(pl.col("anchor_tf").cast(pl.Utf8, strict=False) == pl.lit(tf))
+        if str(tf) in {"S1", "M1"}:
+            out.append(group)
+            continue
+        out.append(_select_candidate_windows_for_group(group))
+
+    if not out:
+        return pl.DataFrame()
+    return pl.concat(out, how="vertical")
 
 
 # -----------------------------------------------------------------------------

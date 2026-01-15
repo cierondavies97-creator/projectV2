@@ -7,7 +7,7 @@ import polars as pl
 
 from engine.core.config_models import ClusterPlan, build_cluster_plan, load_retail_config
 from engine.core.schema import WINDOWS_SCHEMA
-from engine.core.timegrid import validate_anchor_grid
+from engine.core.timegrid import build_anchor_grid, validate_anchor_grid
 from engine.data.windows import write_windows_for_instrument_tf_day
 from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
@@ -141,24 +141,17 @@ def _base_windows_from_candles(
         if d.is_empty():
             return pl.DataFrame()
 
-    # Validate timestamps lie on the anchor grid (do not silently truncate).
+    # Validate timestamps lie on the anchor grid, but always normalize to the grid.
     chk = validate_anchor_grid(d, anchor_tf=anchor_tf, ts_col=ts_col)
     if chk.bad_rows > 0:
-        raise ValueError(
-            f"windows_step: candles not on anchor grid anchor_tf={anchor_tf} bad_rows={chk.bad_rows} "
-            f"(sample below)\n{chk.sample_bad}"
+        logger.warning(
+            "windows_step: candles off grid anchor_tf=%s bad_rows=%d; normalizing to grid",
+            anchor_tf,
+            chk.bad_rows,
         )
 
-    base = (
-        d.select(
-            pl.col(inst_col).cast(pl.Utf8, strict=False).alias("instrument"),
-            pl.lit(anchor_tf).cast(pl.Utf8).alias("anchor_tf"),
-            pl.col(ts_col).cast(pl.Datetime("us"), strict=False).alias("anchor_ts"),
-        )
-        .unique(subset=["instrument", "anchor_tf", "anchor_ts"])
-        .sort(["instrument", "anchor_tf", "anchor_ts"])
-    )
-    return base
+    base = build_anchor_grid(d, anchor_tf=anchor_tf, ts_col=ts_col, instrument_col=inst_col)
+    return base.rename({"ts": "anchor_ts"})
 
 
 def _base_windows_from_features(features: pl.DataFrame, *, anchor_tf: str) -> pl.DataFrame:
@@ -178,21 +171,14 @@ def _base_windows_from_features(features: pl.DataFrame, *, anchor_tf: str) -> pl
 
     chk = validate_anchor_grid(d, anchor_tf=anchor_tf, ts_col="ts")
     if chk.bad_rows > 0:
-        raise ValueError(
-            f"windows_step: features not on anchor grid anchor_tf={anchor_tf} bad_rows={chk.bad_rows} "
-            f"(sample below)\n{chk.sample_bad}"
+        logger.warning(
+            "windows_step: features off grid anchor_tf=%s bad_rows=%d; normalizing to grid",
+            anchor_tf,
+            chk.bad_rows,
         )
 
-    base = (
-        d.select(
-            pl.col("instrument").cast(pl.Utf8, strict=False).alias("instrument"),
-            pl.col("anchor_tf").cast(pl.Utf8, strict=False).alias("anchor_tf"),
-            pl.col("ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"),
-        )
-        .unique(subset=["instrument", "anchor_tf", "anchor_ts"])
-        .sort(["instrument", "anchor_tf", "anchor_ts"])
-    )
-    return base
+    base = build_anchor_grid(d, anchor_tf=anchor_tf, ts_col="ts", instrument_col="instrument")
+    return base.rename({"ts": "anchor_ts"})
 
 
 def _explode_tf_entries(base: pl.DataFrame, tf_entries: Iterable[str]) -> pl.DataFrame:

@@ -32,10 +32,19 @@
                                            "XAUUSD"
                                        ],
                        "anchor_tfs":  [
-                                          "M5"
+                                          "M1",
+                                          "M5",
+                                          "M15",
+                                          "M30",
+                                          "H1",
+                                          "H4",
+                                          "D1"
                                       ],
                        "tf_entries":  [
-                                          "M1"
+                                          "S1",
+                                          "M1",
+                                          "M5",
+                                          "M15"
                                       ],
                        "contexts_filter":  null
                    }
