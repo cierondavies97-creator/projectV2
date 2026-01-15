@@ -5,6 +5,7 @@ import logging
 import polars as pl
 
 from engine.data.brackets import write_brackets_for_instrument_day
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -175,6 +176,10 @@ def run(state: BatchState) -> BatchState:
     Outputs:
       - 'brackets' (and persists to data/brackets/...)
     """
+    assert_contract_alignment(
+        step_name="brackets_step",
+        writes=(ContractWrite(table_key="brackets", writer_fn="write_brackets_for_instrument_day"),),
+    )
     decisions_portfolio = state.get_optional("decisions_portfolio")
     trade_paths = state.get_optional("trade_paths")
 
