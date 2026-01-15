@@ -6,6 +6,7 @@ import polars as pl
 
 from engine.data.trade_clusters import build_trade_clusters_from_trade_paths, write_trade_clusters_for_cluster_day
 from engine.data.decisions import write_decisions_for_stage
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -125,6 +126,20 @@ def run(state: BatchState) -> BatchState:
       - 'decisions_portfolio'
       - updated 'trade_paths'
     """
+    assert_contract_alignment(
+        step_name="portfolio_step",
+        writes=(
+            ContractWrite(
+                table_key="decisions_portfolio",
+                writer_fn="write_decisions_for_stage",
+                stage="portfolio",
+            ),
+            ContractWrite(
+                table_key="trade_clusters",
+                writer_fn="write_trade_clusters_for_cluster_day",
+            ),
+        ),
+    )
     decisions_gatekeeper = state.get_optional("decisions_gatekeeper")
     trade_paths = state.get_optional("trade_paths")
 

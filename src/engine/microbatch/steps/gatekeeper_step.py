@@ -7,6 +7,7 @@ import polars as pl
 
 from engine.data.principles_context import build_principles_context_from_trade_paths, write_principles_context_for_cluster_day
 from engine.data.decisions import write_decisions_for_stage
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -142,6 +143,20 @@ def run(state: BatchState) -> BatchState:
       - updated 'principles_context'
       - updated 'trade_paths'
     """
+    assert_contract_alignment(
+        step_name="gatekeeper_step",
+        writes=(
+            ContractWrite(
+                table_key="decisions_gatekeeper",
+                writer_fn="write_decisions_for_stage",
+                stage="gatekeeper",
+            ),
+            ContractWrite(
+                table_key="principles_context",
+                writer_fn="write_principles_context_for_cluster_day",
+            ),
+        ),
+    )
     decisions_pretrade = state.get_optional("decisions_pretrade")
     principles_context = state.get_optional("principles_context")
     trade_paths = state.get_optional("trade_paths")

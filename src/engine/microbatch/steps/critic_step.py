@@ -6,6 +6,7 @@ from typing import Any, Optional
 import polars as pl
 
 from engine.data.decisions import write_decisions_for_stage
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -249,6 +250,16 @@ def run(state: BatchState) -> BatchState:
       - 'critic' (diagnostics; per evaluation)
       - updated 'trade_paths' (critic fields filled)
     """
+    assert_contract_alignment(
+        step_name="critic_step",
+        writes=(
+            ContractWrite(
+                table_key="decisions_critic",
+                writer_fn="write_decisions_for_stage",
+                stage="critic",
+            ),
+        ),
+    )
     trade_paths = state.get_optional("trade_paths")
     if trade_paths is None:
         trade_paths = pl.DataFrame()
@@ -395,4 +406,3 @@ def run(state: BatchState) -> BatchState:
         )
 
     return state
-
