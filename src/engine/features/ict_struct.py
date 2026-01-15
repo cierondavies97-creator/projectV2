@@ -49,6 +49,11 @@ class IctStructCfg:
     pd_location_discount_max_frac: float = 0.3
     pd_location_premium_min_frac: float = 0.7
     dealing_range_min_height_atr: float = 1.0
+    mms_compression_window_bars: int = 50
+    mms_compression_atr_z_max: float = 0.5
+    mms_manipulation_requires_sweep: int = 1
+    mms_distribution_range_atr_min: float = 1.5
+    mms_phase_persist_bars_min: int = 3
 
     # ATR (for tolerances; also exported for now)
     atr_window: int = 14
@@ -137,6 +142,11 @@ def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str,
         pd_location_discount_max_frac=_get_float("pd_location_discount_max_frac", 0.3),
         pd_location_premium_min_frac=_get_float("pd_location_premium_min_frac", 0.7),
         dealing_range_min_height_atr=_get_float("dealing_range_min_height_atr", 1.0),
+        mms_compression_window_bars=_get_int("mms_compression_window_bars", 50),
+        mms_compression_atr_z_max=_get_float("mms_compression_atr_z_max", 0.5),
+        mms_manipulation_requires_sweep=_get_int("mms_manipulation_requires_sweep", 1),
+        mms_distribution_range_atr_min=_get_float("mms_distribution_range_atr_min", 1.5),
+        mms_phase_persist_bars_min=_get_int("mms_phase_persist_bars_min", 3),
         atr_window=_get_int("atr_window", 14),
         fvg_location_window=_get_int("fvg_location_window", 20),
         fvg_min_gap_ticks=_get_float("fvg_min_gap_ticks", 8.0),
@@ -352,6 +362,7 @@ def build_feature_frame(
             displacement_range_atr = [0.0] * n
             displacement_body_ratio = [0.0] * n
             displacement_close_loc = [0.0] * n
+            displacement_quality = [0.0] * n
 
             for i in range(n):
                 bar_range = float(high[i]) - float(low[i])
@@ -359,16 +370,61 @@ def build_feature_frame(
                 range_atr = bar_range / atr_val if atr_val > eps else 0.0
                 body_ratio = abs(float(close[i]) - float(open_[i])) / max(bar_range, eps)
                 close_loc = (float(close[i]) - float(low[i])) / max(bar_range, eps)
-                direction = "up" if float(close[i]) >= float(open_[i]) else "down"
+                if float(close[i]) > float(open_[i]):
+                    direction = "up"
+                elif float(close[i]) < float(open_[i]):
+                    direction = "down"
+                else:
+                    direction = "none"
                 displacement_range_atr[i] = range_atr
                 displacement_body_ratio[i] = body_ratio
                 displacement_close_loc[i] = close_loc
                 displacement_dir[i] = direction
-                if range_atr >= cfg.displacement_range_atr_min and body_ratio >= cfg.displacement_body_ratio_min:
-                    if direction == "up" and close_loc >= cfg.displacement_close_loc_min:
-                        displacement_flag[i] = True
-                    elif direction == "down" and close_loc <= (1.0 - cfg.displacement_close_loc_min):
-                        displacement_flag[i] = True
+                close_loc_pass = False
+                if direction == "up" and close_loc >= cfg.displacement_close_loc_min:
+                    close_loc_pass = True
+                elif direction == "down" and (1.0 - close_loc) >= cfg.displacement_close_loc_min:
+                    close_loc_pass = True
+
+                if (
+                    range_atr >= cfg.displacement_range_atr_min
+                    and body_ratio >= cfg.displacement_body_ratio_min
+                    and close_loc_pass
+                ):
+                    displacement_flag[i] = True
+
+                range_score = range_atr / max(cfg.displacement_range_atr_min, eps)
+                body_score = body_ratio / max(cfg.displacement_body_ratio_min, eps)
+                close_score = (
+                    close_loc / max(cfg.displacement_close_loc_min, eps)
+                    if direction == "up"
+                    else (1.0 - close_loc) / max(cfg.displacement_close_loc_min, eps)
+                )
+                base_quality = max(0.0, min(1.0, (range_score + body_score + close_score) / 3.0))
+                displacement_quality[i] = base_quality
+
+            followthrough_bars = int(cfg.displacement_followthrough_bars)
+            for i in range(n):
+                if not displacement_flag[i]:
+                    continue
+                if followthrough_bars <= 0:
+                    continue
+                end_idx = min(n - 1, i + followthrough_bars)
+                atr_val = float(atr[i]) if atr[i] is not None else 0.0
+                if atr_val <= eps:
+                    displacement_quality[i] = 0.0
+                    continue
+                follow_ok = False
+                if displacement_dir[i] == "up":
+                    max_high = max(float(val) for val in high[i + 1 : end_idx + 1])
+                    if max_high - float(high[i]) >= 0.25 * atr_val:
+                        follow_ok = True
+                elif displacement_dir[i] == "down":
+                    min_low = min(float(val) for val in low[i + 1 : end_idx + 1])
+                    if float(low[i]) - min_low >= 0.25 * atr_val:
+                        follow_ok = True
+                if not follow_ok:
+                    displacement_quality[i] *= 0.25
 
             fvg_direction = ["none"] * n
             fvg_gap_ticks = [0.0] * n
@@ -421,6 +477,13 @@ def build_feature_frame(
             pd_index = [None] * n
             dealing_range_age_bars = [0] * n
             fvg_location_bucket = ["equilibrium"] * n
+            mms_phase = ["none"] * n
+            mms_confidence = [0.0] * n
+            mms_range_high = [None] * n
+            mms_range_low = [None] * n
+            mms_range_age_bars = [0] * n
+            mms_manipulation_side = ["none"] * n
+            mms_distribution_dir = ["none"] * n
 
             swing_high = [None] * n
             swing_low = [None] * n
@@ -683,6 +746,13 @@ def build_feature_frame(
             prev_range_high = None
             prev_range_low = None
             prev_range_age = 0
+            mms_phase_current = "none"
+            mms_persist_count = 0
+            mms_range_high_current = None
+            mms_range_low_current = None
+            mms_range_age = 0
+            mms_manip_side_current = "none"
+            mms_dist_dir_current = "none"
             for i in range(n):
                 window_start = max(0, i - eq_lookback_bars + 1)
                 local_high_idx = []
@@ -867,6 +937,131 @@ def build_feature_frame(
                 prev_range_low = range_low
                 fvg_location_bucket[i] = pd_location_bucket[i]
 
+                comp_window = int(cfg.mms_compression_window_bars)
+                if i + 1 >= comp_window:
+                    comp_start = i - comp_window + 1
+                    atr_window = [float(val) for val in atr[comp_start : i + 1] if val is not None]
+                    atr_z_window = [float(val) for val in atr_z[comp_start : i + 1] if val is not None]
+                    if atr_window and atr_z_window:
+                        mean_atr = sum(atr_window) / len(atr_window)
+                        mean_atr_z = sum(atr_z_window) / len(atr_z_window)
+                        window_high = max(float(val) for val in high[comp_start : i + 1])
+                        window_low = min(float(val) for val in low[comp_start : i + 1])
+                        window_range = window_high - window_low
+                        compression_ok = (
+                            mean_atr_z <= cfg.mms_compression_atr_z_max
+                            and (window_range / mean_atr if mean_atr > eps else 0.0)
+                            < cfg.mms_distribution_range_atr_min
+                        )
+                    else:
+                        compression_ok = False
+                        window_high = None
+                        window_low = None
+                else:
+                    compression_ok = False
+                    window_high = None
+                    window_low = None
+
+                if compression_ok:
+                    mms_persist_count += 1
+                else:
+                    mms_persist_count = max(0, mms_persist_count - 1)
+
+                if mms_phase_current == "none" and compression_ok and mms_persist_count >= cfg.mms_phase_persist_bars_min:
+                    mms_phase_current = "accumulation"
+                    mms_range_high_current = window_high
+                    mms_range_low_current = window_low
+                    mms_range_age = 0
+                    mms_manip_side_current = "none"
+                    mms_dist_dir_current = "none"
+
+                if mms_phase_current != "none":
+                    if mms_range_high_current is not None and mms_range_low_current is not None:
+                        mms_range_age += 1
+                        mms_range_mid = (mms_range_high_current + mms_range_low_current) / 2.0
+                    else:
+                        mms_range_mid = None
+                else:
+                    mms_range_mid = None
+
+                sweep_up = liq_sweep_flag[i] and liq_sweep_side[i] == "eqh"
+                sweep_down = liq_sweep_flag[i] and liq_sweep_side[i] == "eql"
+
+                if mms_phase_current == "accumulation":
+                    manip_ok = False
+                    if int(cfg.mms_manipulation_requires_sweep) == 1:
+                        manip_ok = sweep_up or sweep_down
+                    else:
+                        manip_ok = (sweep_up or sweep_down) or liq_grab_flag[i]
+                    if manip_ok and mms_persist_count >= cfg.mms_phase_persist_bars_min:
+                        mms_phase_current = "manipulation"
+                        if sweep_up:
+                            mms_manip_side_current = "buyside"
+                        elif sweep_down:
+                            mms_manip_side_current = "sellside"
+                        else:
+                            mms_manip_side_current = "buyside" if float(close[i]) < float(open_[i]) else "sellside"
+                        mms_dist_dir_current = "none"
+                        mms_persist_count = 0
+
+                if mms_phase_current == "manipulation" and mms_persist_count >= cfg.mms_phase_persist_bars_min:
+                    dist_expected = "down" if mms_manip_side_current == "buyside" else "up"
+                    dist_ok = False
+                    if displacement_flag[i] and displacement_dir[i] == dist_expected:
+                        dist_ok = True
+                    if dist_ok and mms_range_high_current is not None and mms_range_low_current is not None:
+                        boundary = mms_range_low_current if dist_expected == "down" else mms_range_high_current
+                        excursion = (
+                            boundary - float(low[i])
+                            if dist_expected == "down"
+                            else float(high[i]) - boundary
+                        )
+                        atr_val = float(atr[i]) if atr[i] is not None else 0.0
+                        if atr_val > eps and excursion >= cfg.mms_distribution_range_atr_min * atr_val:
+                            mms_phase_current = "distribution"
+                            mms_dist_dir_current = dist_expected
+                            mms_persist_count = 0
+
+                if (
+                    mms_phase_current in {"accumulation", "manipulation", "distribution"}
+                    and mms_range_high_current is not None
+                    and mms_range_low_current is not None
+                    and window_high is not None
+                    and window_low is not None
+                ):
+                    prev_mid = (mms_range_high_current + mms_range_low_current) / 2.0
+                    new_mid = (window_high + window_low) / 2.0
+                    atr_val = float(atr[i]) if atr[i] is not None else 0.0
+                    mid_shift = abs(new_mid - prev_mid)
+                    overlap = max(
+                        0.0,
+                        min(mms_range_high_current, window_high) - max(mms_range_low_current, window_low),
+                    )
+                    prev_range = mms_range_high_current - mms_range_low_current
+                    overlap_frac = overlap / max(prev_range, eps)
+                    if atr_val > eps and (mid_shift > atr_val or overlap_frac < 0.5):
+                        mms_phase_current = "none"
+                        mms_range_high_current = None
+                        mms_range_low_current = None
+                        mms_range_age = 0
+                        mms_manip_side_current = "none"
+                        mms_dist_dir_current = "none"
+                        mms_persist_count = 0
+
+                if mms_range_high_current is not None and mms_range_low_current is not None:
+                    mms_range_high[i] = mms_range_high_current
+                    mms_range_low[i] = mms_range_low_current
+                    mms_range_age_bars[i] = mms_range_age
+
+                mms_phase[i] = mms_phase_current
+                mms_manipulation_side[i] = mms_manip_side_current
+                mms_distribution_dir[i] = mms_dist_dir_current
+                comp_score = 1.0 if compression_ok else 0.0
+                sweep_score = liq_sweep_quality[i] if liq_sweep_flag[i] else 0.0
+                disp_score = displacement_quality[i]
+                dist_score = 1.0 if mms_phase_current == "distribution" else 0.0
+                mms_confidence[i] = max(0.0, min(1.0, (comp_score + sweep_score + disp_score + dist_score) / 4.0))
+
             swing_window = max(1, int(cfg.swing_lookback_bars))
             swing_min_bars = int(cfg.swing_strength_min_bars)
             trend_window = int(cfg.swing_trend_dir_window)
@@ -1021,6 +1216,12 @@ def build_feature_frame(
                     pl.Series(name="fvg_origin_impulse_atr", values=fvg_origin_impulse_atr, dtype=pl.Float64),
                     pl.Series(name="fvg_origin_body_ratio", values=fvg_origin_body_ratio, dtype=pl.Float64),
                     pl.Series(name="fvg_quality", values=fvg_quality, dtype=pl.Float64),
+                    pl.Series(name="displacement_flag", values=displacement_flag, dtype=pl.Boolean),
+                    pl.Series(name="displacement_dir", values=displacement_dir, dtype=pl.Utf8),
+                    pl.Series(name="displacement_range_atr", values=displacement_range_atr, dtype=pl.Float64),
+                    pl.Series(name="displacement_body_ratio", values=displacement_body_ratio, dtype=pl.Float64),
+                    pl.Series(name="displacement_close_loc", values=displacement_close_loc, dtype=pl.Float64),
+                    pl.Series(name="displacement_quality", values=displacement_quality, dtype=pl.Float64),
                     pl.Series(name="ob_type", values=ob_type, dtype=pl.Utf8),
                     pl.Series(name="ob_high", values=ob_high, dtype=pl.Float64),
                     pl.Series(name="ob_low", values=ob_low, dtype=pl.Float64),
@@ -1056,6 +1257,13 @@ def build_feature_frame(
                     pl.Series(name="ict_struct_pd_index", values=pd_index, dtype=pl.Int32),
                     pl.Series(name="dealing_range_age_bars", values=dealing_range_age_bars, dtype=pl.Int32),
                     pl.Series(name="fvg_location_bucket", values=fvg_location_bucket, dtype=pl.Utf8),
+                    pl.Series(name="mms_phase", values=mms_phase, dtype=pl.Utf8),
+                    pl.Series(name="mms_confidence", values=mms_confidence, dtype=pl.Float64),
+                    pl.Series(name="mms_range_high", values=mms_range_high, dtype=pl.Float64),
+                    pl.Series(name="mms_range_low", values=mms_range_low, dtype=pl.Float64),
+                    pl.Series(name="mms_range_age_bars", values=mms_range_age_bars, dtype=pl.Int32),
+                    pl.Series(name="mms_manipulation_side", values=mms_manipulation_side, dtype=pl.Utf8),
+                    pl.Series(name="mms_distribution_dir", values=mms_distribution_dir, dtype=pl.Utf8),
                     pl.Series(name="ict_struct_swing_high", values=swing_high, dtype=pl.Float64),
                     pl.Series(name="ict_struct_swing_low", values=swing_low, dtype=pl.Float64),
                     pl.Series(name="ict_struct_swing_strength", values=swing_strength, dtype=pl.Float64),
@@ -1101,6 +1309,12 @@ def build_feature_frame(
                 pl.col("fvg_origin_body_ratio"),
                 pl.col("fvg_quality"),
                 pl.col("fvg_location_bucket"),
+                pl.col("displacement_flag"),
+                pl.col("displacement_dir"),
+                pl.col("displacement_range_atr"),
+                pl.col("displacement_body_ratio"),
+                pl.col("displacement_close_loc"),
+                pl.col("displacement_quality"),
 
                 pl.col("ob_type"),
                 pl.col("ob_high"),
@@ -1136,6 +1350,13 @@ def build_feature_frame(
                 pl.col("pd_location_bucket"),
                 pl.col("ict_struct_pd_index"),
                 pl.col("dealing_range_age_bars"),
+                pl.col("mms_phase"),
+                pl.col("mms_confidence"),
+                pl.col("mms_range_high"),
+                pl.col("mms_range_low"),
+                pl.col("mms_range_age_bars"),
+                pl.col("mms_manipulation_side"),
+                pl.col("mms_distribution_dir"),
                 pl.col("ict_struct_swing_high"),
                 pl.col("ict_struct_swing_low"),
                 pl.col("ict_struct_swing_strength"),
