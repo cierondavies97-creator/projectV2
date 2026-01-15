@@ -128,6 +128,22 @@ def _normalize_anchor_ts(df: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(frames, how="vertical") if frames else out
 
 
+def _ensure_decision_ts(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+    if "decision_ts" in df.columns:
+        return df
+
+    sources: list[pl.Expr] = []
+    for col in ("entry_ts", "window_ts", "ts", "anchor_ts"):
+        if col in df.columns:
+            sources.append(pl.col(col))
+    if not sources:
+        return df
+
+    return df.with_columns(pl.coalesce(sources).cast(pl.Datetime("us"), strict=False).alias("decision_ts"))
+
+
 def write_decisions_for_stage(
     ctx: RunContext,
     trading_day: date,
@@ -145,6 +161,7 @@ def write_decisions_for_stage(
     if "stage" not in df.columns:
         df = df.with_columns(pl.lit(stage).cast(pl.Utf8).alias("stage"))
 
+    df = _ensure_decision_ts(df)
     df = _normalize_anchor_ts(df)
     _validate_decisions_frame(stage, df)
 
