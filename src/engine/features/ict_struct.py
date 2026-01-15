@@ -46,6 +46,18 @@ class IctStructCfg:
     fvg_max_origin_age_bars: int = 200
     fvg_min_reaction_atr: float = 0.3
     displacement_followthrough_bars: int = 2
+    displacement_range_atr_min: float = 1.2
+    displacement_body_ratio_min: float = 0.6
+    displacement_close_loc_min: float = 0.7
+
+    ob_lookback_bars: int = 50
+    ob_height_ticks_min: float = 8.0
+    ob_mitigation_bars_max: int = 200
+    ob_min_impulse_range_atr: float = 1.0
+    ob_min_body_ratio: float = 0.55
+    ob_max_origin_age_bars: int = 300
+    ob_min_reaction_atr: float = 0.3
+    ob_breaker_confirm_bars: int = 2
 
 
 def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str, Any] | None) -> IctStructCfg:
@@ -83,6 +95,17 @@ def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str,
         fvg_max_origin_age_bars=_get_int("fvg_max_origin_age_bars", 200),
         fvg_min_reaction_atr=_get_float("fvg_min_reaction_atr", 0.3),
         displacement_followthrough_bars=_get_int("displacement_followthrough_bars", 2),
+        displacement_range_atr_min=_get_float("displacement_range_atr_min", 1.2),
+        displacement_body_ratio_min=_get_float("displacement_body_ratio_min", 0.6),
+        displacement_close_loc_min=_get_float("displacement_close_loc_min", 0.7),
+        ob_lookback_bars=_get_int("ob_lookback_bars", 50),
+        ob_height_ticks_min=_get_float("ob_height_ticks_min", 8.0),
+        ob_mitigation_bars_max=_get_int("ob_mitigation_bars_max", 200),
+        ob_min_impulse_range_atr=_get_float("ob_min_impulse_range_atr", 1.0),
+        ob_min_body_ratio=_get_float("ob_min_body_ratio", 0.55),
+        ob_max_origin_age_bars=_get_int("ob_max_origin_age_bars", 300),
+        ob_min_reaction_atr=_get_float("ob_min_reaction_atr", 0.3),
+        ob_breaker_confirm_bars=_get_int("ob_breaker_confirm_bars", 2),
     )
 
 
@@ -262,75 +285,17 @@ def build_feature_frame(
             .alias("fvg_location_bucket")
         )
 
-        # -----------------------------
-        # Order block (dev stub)
-        #   flip events between bull/bear candles; assigns prior bar as "OB"
-        # -----------------------------
-        is_bull = (pl.col("close") >= pl.col("open")).fill_null(False)
-        prev_is_bull = is_bull.shift(1).over("instrument").fill_null(is_bull)
-
-        flip_to_bull = (is_bull & (~prev_is_bull)).fill_null(False)
-        flip_to_bear = ((~is_bull) & prev_is_bull).fill_null(False)
-        ob_active = (flip_to_bull | flip_to_bear).fill_null(False)
-
-        ob_type_expr = (
-            pl.when(flip_to_bull)
-            .then(pl.lit("bullish"))
-            .when(flip_to_bear)
-            .then(pl.lit("bearish"))
-            .otherwise(pl.lit("none"))
-            .alias("ob_type")
-        )
-
-        ob_high_expr = (
-            pl.when(ob_active)
-            .then(pl.col("high").shift(1).over("instrument"))
-            .otherwise(pl.lit(None))
-            .cast(pl.Float64, strict=False)
-            .alias("ob_high")
-        )
-
-        ob_low_expr = (
-            pl.when(ob_active)
-            .then(pl.col("low").shift(1).over("instrument"))
-            .otherwise(pl.lit(None))
-            .cast(pl.Float64, strict=False)
-            .alias("ob_low")
-        )
-
-        ob_origin_ts_expr = (
-            pl.when(ob_active)
-            .then(pl.col("ts").shift(1).over("instrument"))
-            .otherwise(pl.lit(None))
-            .cast(pl.Datetime("us"), strict=False)
-            .alias("ob_origin_ts")
-        )
-
-        ob_fresh_expr = (
-            pl.when(ob_active)
-            .then(pl.lit("fresh"))
-            .otherwise(pl.lit("none"))
-            .alias("ob_freshness_bucket")
-        )
-
         df = df.with_columns(
             eqh_expr,
             eql_expr,
             liq_grab_expr,
             fvg_loc_expr,
-
-            # OB outputs
-            ob_type_expr,
-            ob_high_expr,
-            ob_low_expr,
-            ob_origin_ts_expr,
-            ob_fresh_expr,
         )
 
         # -----------------------------
-        # FVG full logic (per instrument)
+        # FVG/OB full logic (per instrument)
         # -----------------------------
-        fvg_frames: list[pl.DataFrame] = []
+        feature_frames: list[pl.DataFrame] = []
         eps = 1e-9
         for inst, grp in df.partition_by("instrument", maintain_order=True, as_dict=True).items():
             tick_size = tick_map.get(str(inst), tick_map.get("__default__", 0.0001))
@@ -341,6 +306,29 @@ def build_feature_frame(
             atr = grp.get_column("atr_anchor").to_list()
             ts_list = grp.get_column("ts").to_list()
             n = len(high)
+
+            displacement_flag = [False] * n
+            displacement_dir = ["none"] * n
+            displacement_range_atr = [0.0] * n
+            displacement_body_ratio = [0.0] * n
+            displacement_close_loc = [0.0] * n
+
+            for i in range(n):
+                bar_range = float(high[i]) - float(low[i])
+                atr_val = float(atr[i]) if atr[i] is not None else 0.0
+                range_atr = bar_range / atr_val if atr_val > eps else 0.0
+                body_ratio = abs(float(close[i]) - float(open_[i])) / max(bar_range, eps)
+                close_loc = (float(close[i]) - float(low[i])) / max(bar_range, eps)
+                direction = "up" if float(close[i]) >= float(open_[i]) else "down"
+                displacement_range_atr[i] = range_atr
+                displacement_body_ratio[i] = body_ratio
+                displacement_close_loc[i] = close_loc
+                displacement_dir[i] = direction
+                if range_atr >= cfg.displacement_range_atr_min and body_ratio >= cfg.displacement_body_ratio_min:
+                    if direction == "up" and close_loc >= cfg.displacement_close_loc_min:
+                        displacement_flag[i] = True
+                    elif direction == "down" and close_loc <= (1.0 - cfg.displacement_close_loc_min):
+                        displacement_flag[i] = True
 
             fvg_direction = ["none"] * n
             fvg_gap_ticks = [0.0] * n
@@ -356,6 +344,130 @@ def build_feature_frame(
             fvg_origin_impulse_atr = [None] * n
             fvg_origin_body_ratio = [None] * n
             fvg_quality = [0.0] * n
+
+            ob_type = ["none"] * n
+            ob_high = [None] * n
+            ob_low = [None] * n
+            ob_mid = [None] * n
+            ob_height_ticks = [None] * n
+            ob_origin_ts = [None] * n
+            ob_age_bars = [None] * n
+            ob_distance_ticks = [None] * n
+            ob_freshness_bucket = ["none"] * n
+            ob_quality = [0.0] * n
+            ob_breaker_flag = [False] * n
+            ob_breaker_dir = [None] * n
+            ob_breaker_ts = [None] * n
+
+            for i in range(n):
+                lookback_start = max(0, i - int(cfg.ob_lookback_bars))
+                disp_idx = None
+                for j in range(i, lookback_start - 1, -1):
+                    if displacement_flag[j]:
+                        disp_idx = j
+                        break
+                if disp_idx is None:
+                    continue
+
+                disp_direction = displacement_dir[disp_idx]
+                if disp_direction == "up":
+                    ob_idx = None
+                    for j in range(disp_idx - 1, -1, -1):
+                        if float(close[j]) < float(open_[j]):
+                            ob_idx = j
+                            break
+                    ob_dir = "bullish"
+                else:
+                    ob_idx = None
+                    for j in range(disp_idx - 1, -1, -1):
+                        if float(close[j]) > float(open_[j]):
+                            ob_idx = j
+                            break
+                    ob_dir = "bearish"
+
+                if ob_idx is None:
+                    continue
+
+                if displacement_range_atr[disp_idx] < cfg.ob_min_impulse_range_atr or (
+                    displacement_body_ratio[disp_idx] < cfg.ob_min_body_ratio
+                ):
+                    continue
+
+                ob_high_val = float(high[ob_idx])
+                ob_low_val = float(low[ob_idx])
+                ob_height = ob_high_val - ob_low_val
+                ob_height_ticks_val = ob_height / tick_size if tick_size > eps else 0.0
+                if ob_height_ticks_val < cfg.ob_height_ticks_min:
+                    continue
+
+                age_bars = i - ob_idx
+                if age_bars > cfg.ob_max_origin_age_bars:
+                    continue
+
+                ob_type[i] = ob_dir
+                ob_high[i] = ob_high_val
+                ob_low[i] = ob_low_val
+                ob_mid_val = (ob_high_val + ob_low_val) / 2.0
+                ob_mid[i] = ob_mid_val
+                ob_height_ticks[i] = ob_height_ticks_val
+                ob_origin_ts[i] = ts_list[ob_idx]
+                ob_age_bars[i] = age_bars
+                ob_distance_ticks[i] = abs(float(close[i]) - ob_mid_val) / tick_size if tick_size > eps else 0.0
+                ob_quality[i] = 1.0
+
+                first_touch_index = None
+                touch_price = None
+                atr_at_touch = None
+                for j in range(ob_idx + 1, i + 1):
+                    if float(low[j]) <= ob_high_val and float(high[j]) >= ob_low_val:
+                        first_touch_index = j
+                        if ob_dir == "bullish":
+                            touch_price = min(float(high[j]), ob_high_val)
+                        else:
+                            touch_price = max(float(low[j]), ob_low_val)
+                        atr_at_touch = float(atr[j]) if atr[j] is not None else 0.0
+                        break
+
+                if first_touch_index is None:
+                    if age_bars > cfg.ob_mitigation_bars_max:
+                        ob_freshness_bucket[i] = "old"
+                    else:
+                        ob_freshness_bucket[i] = "fresh"
+                else:
+                    ob_freshness_bucket[i] = "mitigated"
+                    follow_end = min(n - 1, first_touch_index + int(cfg.displacement_followthrough_bars))
+                    if atr_at_touch is None or atr_at_touch <= eps or touch_price is None:
+                        ob_quality[i] = 0.0
+                    else:
+                        if ob_dir == "bullish":
+                            max_future_high = max(float(val) for val in high[first_touch_index : follow_end + 1])
+                            reaction = max_future_high - float(touch_price)
+                        else:
+                            min_future_low = min(float(val) for val in low[first_touch_index : follow_end + 1])
+                            reaction = float(touch_price) - min_future_low
+                        if reaction < cfg.ob_min_reaction_atr * atr_at_touch:
+                            ob_quality[i] = 0.0
+
+                confirm_bars = int(cfg.ob_breaker_confirm_bars)
+                if confirm_bars > 0:
+                    count = 0
+                    breaker_start = None
+                    for j in range(ob_idx + 1, i + 1):
+                        if ob_dir == "bullish":
+                            breaker = float(close[j]) < ob_low_val
+                        else:
+                            breaker = float(close[j]) > ob_high_val
+                        if breaker:
+                            count += 1
+                            if count >= confirm_bars:
+                                breaker_start = j - confirm_bars + 1
+                                break
+                        else:
+                            count = 0
+                    if breaker_start is not None:
+                        ob_breaker_flag[i] = True
+                        ob_breaker_dir[i] = "down" if ob_dir == "bullish" else "up"
+                        ob_breaker_ts[i] = ts_list[breaker_start]
 
             for i in range(2, n):
                 bull_gap = low[i] > high[i - 2]
@@ -450,7 +562,7 @@ def build_feature_frame(
                             if reaction < cfg.fvg_min_reaction_atr * atr_at_touch:
                                 fvg_quality[i] = 0.0
 
-            fvg_frames.append(
+            feature_frames.append(
                 grp.with_columns(
                     pl.Series(name="fvg_direction", values=fvg_direction, dtype=pl.Utf8),
                     pl.Series(name="fvg_gap_ticks", values=fvg_gap_ticks, dtype=pl.Float64),
@@ -470,10 +582,23 @@ def build_feature_frame(
                     pl.Series(name="fvg_origin_impulse_atr", values=fvg_origin_impulse_atr, dtype=pl.Float64),
                     pl.Series(name="fvg_origin_body_ratio", values=fvg_origin_body_ratio, dtype=pl.Float64),
                     pl.Series(name="fvg_quality", values=fvg_quality, dtype=pl.Float64),
+                    pl.Series(name="ob_type", values=ob_type, dtype=pl.Utf8),
+                    pl.Series(name="ob_high", values=ob_high, dtype=pl.Float64),
+                    pl.Series(name="ob_low", values=ob_low, dtype=pl.Float64),
+                    pl.Series(name="ob_mid", values=ob_mid, dtype=pl.Float64),
+                    pl.Series(name="ob_height_ticks", values=ob_height_ticks, dtype=pl.Float64),
+                    pl.Series(name="ob_origin_ts", values=ob_origin_ts, dtype=pl.Datetime("us")),
+                    pl.Series(name="ob_age_bars", values=ob_age_bars, dtype=pl.Int32),
+                    pl.Series(name="ob_distance_ticks", values=ob_distance_ticks, dtype=pl.Float64),
+                    pl.Series(name="ob_freshness_bucket", values=ob_freshness_bucket, dtype=pl.Utf8),
+                    pl.Series(name="ob_quality", values=ob_quality, dtype=pl.Float64),
+                    pl.Series(name="ob_breaker_flag", values=ob_breaker_flag, dtype=pl.Boolean),
+                    pl.Series(name="ob_breaker_dir", values=ob_breaker_dir, dtype=pl.Utf8),
+                    pl.Series(name="ob_breaker_ts", values=ob_breaker_ts, dtype=pl.Datetime("us")),
                 )
             )
 
-        df = pl.concat(fvg_frames, how="vertical") if fvg_frames else df
+        df = pl.concat(feature_frames, how="vertical") if feature_frames else df
         df = df.with_columns(pl.lit(str(anchor_tf)).alias("fvg_origin_tf"))
 
         out = df.select(
@@ -502,8 +627,16 @@ def build_feature_frame(
                 pl.col("ob_type"),
                 pl.col("ob_high"),
                 pl.col("ob_low"),
+                pl.col("ob_mid"),
+                pl.col("ob_height_ticks"),
                 pl.col("ob_origin_ts"),
+                pl.col("ob_age_bars"),
+                pl.col("ob_distance_ticks"),
                 pl.col("ob_freshness_bucket"),
+                pl.col("ob_quality"),
+                pl.col("ob_breaker_flag"),
+                pl.col("ob_breaker_dir"),
+                pl.col("ob_breaker_ts"),
 
                 pl.col("eqh_flag"),
                 pl.col("eql_flag"),
