@@ -9,6 +9,7 @@ from typing import Any, Optional
 import polars as pl
 import yaml
 
+from engine.core.timegrid import tf_to_truncate_rule
 from engine.core.schema import TRADE_PATHS_SCHEMA, polars_dtype
 from engine.data.decisions import write_decisions_for_stage
 from engine.data.trade_paths import write_trade_paths_for_day
@@ -220,6 +221,90 @@ def _ensure_decisions_min_schema(df: pl.DataFrame) -> pl.DataFrame:
     return out
 
 
+def _anchor_join_keys(decisions: pl.DataFrame, trade_paths: pl.DataFrame) -> list[str]:
+    keys: list[str] = []
+    for c in ["trade_id", "instrument"]:
+        if c in decisions.columns and c in trade_paths.columns:
+            keys.append(c)
+    for c in ["paradigm_id", "principle_id", "candidate_id", "experiment_id"]:
+        if c in decisions.columns and c in trade_paths.columns:
+            keys.append(c)
+    if not keys and "trade_id" in decisions.columns and "trade_id" in trade_paths.columns:
+        keys = ["trade_id"]
+    return keys
+
+
+def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+    if "anchor_tf" not in df.columns or "anchor_ts" not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (anchor_tf,), grp in df.group_by(["anchor_tf"], maintain_order=True):
+        if anchor_tf is None:
+            frames.append(grp)
+            continue
+        rule = tf_to_truncate_rule(str(anchor_tf))
+        frames.append(
+            grp.with_columns(
+                pl.col("anchor_ts")
+                .cast(pl.Datetime("us"), strict=False)
+                .dt.truncate(rule)
+                .alias("anchor_ts")
+            )
+        )
+    return pl.concat(frames, how="vertical") if frames else df
+
+
+def _enrich_decisions_anchor(decisions: pl.DataFrame, trade_paths: pl.DataFrame | None) -> pl.DataFrame:
+    if decisions is None or decisions.is_empty():
+        return pl.DataFrame()
+
+    out = decisions
+    tp = trade_paths if trade_paths is not None else pl.DataFrame()
+
+    if tp is not None and not tp.is_empty():
+        keys = _anchor_join_keys(out, tp)
+        if keys:
+            tp_cols = []
+            if "anchor_tf" in tp.columns:
+                tp_cols.append(pl.col("anchor_tf").alias("_tp_anchor_tf"))
+            if "entry_ts" in tp.columns:
+                tp_cols.append(pl.col("entry_ts").alias("_tp_entry_ts"))
+            if tp_cols:
+                anchor_map = tp.select([*keys, *tp_cols]).unique()
+                out = out.join(anchor_map, on=keys, how="left")
+
+    anchor_exprs: list[pl.Expr] = []
+    if "_tp_anchor_tf" in out.columns:
+        if "anchor_tf" in out.columns:
+            anchor_exprs.append(pl.coalesce([pl.col("anchor_tf"), pl.col("_tp_anchor_tf")]).alias("anchor_tf"))
+        else:
+            anchor_exprs.append(pl.col("_tp_anchor_tf").alias("anchor_tf"))
+
+    anchor_ts_sources: list[pl.Expr] = []
+    if "anchor_ts" in out.columns:
+        anchor_ts_sources.append(pl.col("anchor_ts"))
+    if "entry_ts" in out.columns:
+        anchor_ts_sources.append(pl.col("entry_ts"))
+    if "_tp_entry_ts" in out.columns:
+        anchor_ts_sources.append(pl.col("_tp_entry_ts"))
+    if anchor_ts_sources:
+        anchor_exprs.append(
+            pl.coalesce(anchor_ts_sources).cast(pl.Datetime("us"), strict=False).alias("anchor_ts")
+        )
+
+    if anchor_exprs:
+        out = out.with_columns(anchor_exprs)
+
+    drop_cols = [c for c in ["_tp_anchor_tf", "_tp_entry_ts"] if c in out.columns]
+    if drop_cols:
+        out = out.drop(drop_cols)
+
+    return _truncate_anchor_ts_by_tf(out)
+
+
 def _stamp_eval_identity(
     df: pl.DataFrame,
     *,
@@ -338,6 +423,9 @@ def run(state: BatchState) -> BatchState:
 
             # Keep trade_paths schema-complete early (reports_step will validate again if needed)
             tp_df = _ensure_trade_paths_schema(tp_df)
+
+        if dec_df is not None and not dec_df.is_empty():
+            dec_df = _enrich_decisions_anchor(dec_df, tp_df)
 
         decisions_frames.append(dec_df)
         if tp_df is not None and not tp_df.is_empty():
