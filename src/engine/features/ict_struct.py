@@ -38,6 +38,14 @@ class IctStructCfg:
 
     # FVG detection and location bucket
     fvg_location_window: int = 20
+    fvg_min_gap_ticks: float = 8.0
+    fvg_max_fill_bars: int = 6
+    fvg_partial_fill_cut: float = 0.5
+    fvg_origin_impulse_range_atr_min: float = 1.0
+    fvg_origin_body_ratio_min: float = 0.55
+    fvg_max_origin_age_bars: int = 200
+    fvg_min_reaction_atr: float = 0.3
+    displacement_followthrough_bars: int = 2
 
 
 def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str, Any] | None) -> IctStructCfg:
@@ -67,6 +75,14 @@ def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str,
         eq_tol_atr_frac=_get_float("eq_tol_atr_frac", 0.10),
         atr_window=_get_int("atr_window", 14),
         fvg_location_window=_get_int("fvg_location_window", 20),
+        fvg_min_gap_ticks=_get_float("fvg_min_gap_ticks", 8.0),
+        fvg_max_fill_bars=_get_int("fvg_max_fill_bars", 6),
+        fvg_partial_fill_cut=_get_float("fvg_partial_fill_cut", 0.5),
+        fvg_origin_impulse_range_atr_min=_get_float("fvg_origin_impulse_range_atr_min", 1.0),
+        fvg_origin_body_ratio_min=_get_float("fvg_origin_body_ratio_min", 0.55),
+        fvg_max_origin_age_bars=_get_int("fvg_max_origin_age_bars", 200),
+        fvg_min_reaction_atr=_get_float("fvg_min_reaction_atr", 0.3),
+        displacement_followthrough_bars=_get_int("displacement_followthrough_bars", 2),
     )
 
 
@@ -101,6 +117,25 @@ def _min_tick_expr(ctx, default_min_tick: float = 0.0001) -> pl.Expr:
     )
 
 
+def _min_tick_map(ctx, default_min_tick: float = 0.0001) -> dict[str, float]:
+    mp: dict[str, float] = {}
+    cluster = getattr(ctx, "cluster", None)
+    for inst in getattr(cluster, "instruments", []) or []:
+        if isinstance(inst, str):
+            continue
+        name = getattr(inst, "instrument", None) or getattr(inst, "symbol", None)
+        mt = getattr(inst, "min_tick", None) or getattr(inst, "tick_size", None)
+        if name and mt is not None:
+            try:
+                mp[str(name)] = float(mt)
+            except Exception:
+                pass
+    if not mp:
+        return {"__default__": float(default_min_tick)}
+    mp["__default__"] = float(default_min_tick)
+    return mp
+
+
 def build_feature_frame(
     *,
     ctx,
@@ -130,6 +165,7 @@ def build_feature_frame(
         anchor_tfs = sorted(set(candles.get_column("tf").cast(pl.Utf8, strict=False).to_list()))
 
     tick_expr = _min_tick_expr(ctx)
+    tick_map = _min_tick_map(ctx)
 
     frames: list[pl.DataFrame] = []
 
@@ -207,48 +243,8 @@ def build_feature_frame(
         )
 
         # -----------------------------
-        # FVG (dev stub, 3-bar gap)
-        #   bullish: low_t > high_{t-2}
-        #   bearish: high_t < low_{t-2}
+        # FVG location bucket
         # -----------------------------
-        hi_2 = pl.col("high").shift(2).over("instrument")
-        lo_2 = pl.col("low").shift(2).over("instrument")
-
-        bull_gap_px = (pl.col("low") - hi_2).cast(pl.Float64, strict=False)
-        bear_gap_px = (lo_2 - pl.col("high")).cast(pl.Float64, strict=False)
-
-        fvg_dir_expr = (
-            pl.when(bull_gap_px > 0)
-            .then(pl.lit("bull"))
-            .when(bear_gap_px > 0)
-            .then(pl.lit("bear"))
-            .otherwise(pl.lit("none"))
-            .alias("fvg_direction")
-        )
-
-        fvg_gap_px_expr = (
-            pl.when(bull_gap_px > 0)
-            .then(bull_gap_px)
-            .when(bear_gap_px > 0)
-            .then(bear_gap_px)
-            .otherwise(pl.lit(0.0))
-            .cast(pl.Float64, strict=False)
-        )
-
-        fvg_gap_ticks_expr = (
-            safe_div(fvg_gap_px_expr, tick_expr, default=0.0)
-            .round(0)
-            .cast(pl.Int32, strict=False)
-            .alias("fvg_gap_ticks")
-        )
-
-        fvg_fill_state_expr = (
-            pl.when((bull_gap_px > 0) | (bear_gap_px > 0))
-            .then(pl.lit("unfilled"))
-            .otherwise(pl.lit("none"))
-            .alias("fvg_fill_state")
-        )
-
         mid_expr = ((pl.col("high") + pl.col("low")) / pl.lit(2.0)).cast(pl.Float64, strict=False)
         mid_mean_expr = (
             mid_expr.rolling_mean(window_size=int(cfg.fvg_location_window), min_periods=int(cfg.fvg_location_window))
@@ -321,13 +317,6 @@ def build_feature_frame(
             eqh_expr,
             eql_expr,
             liq_grab_expr,
-
-            # FVG outputs
-            fvg_dir_expr,
-            fvg_gap_ticks_expr,
-            pl.lit(str(anchor_tf)).alias("fvg_origin_tf"),
-            pl.col("ts").cast(pl.Datetime("us"), strict=False).alias("fvg_origin_ts"),
-            fvg_fill_state_expr,
             fvg_loc_expr,
 
             # OB outputs
@@ -338,6 +327,155 @@ def build_feature_frame(
             ob_fresh_expr,
         )
 
+        # -----------------------------
+        # FVG full logic (per instrument)
+        # -----------------------------
+        fvg_frames: list[pl.DataFrame] = []
+        eps = 1e-9
+        for inst, grp in df.partition_by("instrument", maintain_order=True, as_dict=True).items():
+            tick_size = tick_map.get(str(inst), tick_map.get("__default__", 0.0001))
+            high = grp.get_column("high").to_list()
+            low = grp.get_column("low").to_list()
+            open_ = grp.get_column("open").to_list()
+            close = grp.get_column("close").to_list()
+            atr = grp.get_column("atr_anchor").to_list()
+            ts_list = grp.get_column("ts").to_list()
+            n = len(high)
+
+            fvg_direction = ["none"] * n
+            fvg_gap_ticks = [0.0] * n
+            fvg_upper = [None] * n
+            fvg_lower = [None] * n
+            fvg_mid = [None] * n
+            fvg_origin_ts = [None] * n
+            fvg_age_bars = [None] * n
+            fvg_fill_frac = [0.0] * n
+            fvg_fill_state = ["none"] * n
+            fvg_fill_duration_bars = [None] * n
+            fvg_was_mitigated_flag = [False] * n
+            fvg_origin_impulse_atr = [None] * n
+            fvg_origin_body_ratio = [None] * n
+            fvg_quality = [0.0] * n
+
+            for i in range(2, n):
+                bull_gap = low[i] > high[i - 2]
+                bear_gap = high[i] < low[i - 2]
+                if not bull_gap and not bear_gap:
+                    continue
+
+                if bull_gap:
+                    lower = float(high[i - 2])
+                    upper = float(low[i])
+                    direction = "bull"
+                else:
+                    upper = float(low[i - 2])
+                    lower = float(high[i])
+                    direction = "bear"
+
+                gap_px = upper - lower
+                if gap_px <= 0:
+                    continue
+                gap_ticks = gap_px / tick_size if tick_size > eps else 0.0
+                if gap_ticks < cfg.fvg_min_gap_ticks:
+                    continue
+
+                origin_range = float(high[i - 1]) - float(low[i - 1])
+                atr_val = float(atr[i - 1]) if atr[i - 1] is not None else 0.0
+                origin_range_atr = origin_range / atr_val if atr_val > eps else 0.0
+                body_ratio = abs(float(close[i - 1]) - float(open_[i - 1])) / max(origin_range, eps)
+                if (origin_range_atr < cfg.fvg_origin_impulse_range_atr_min) or (
+                    body_ratio < cfg.fvg_origin_body_ratio_min
+                ):
+                    continue
+
+                fvg_direction[i] = direction
+                fvg_gap_ticks[i] = gap_ticks
+                fvg_upper[i] = upper
+                fvg_lower[i] = lower
+                fvg_mid[i] = (upper + lower) / 2.0
+                fvg_origin_ts[i] = ts_list[i]
+                fvg_age_bars[i] = 0
+                fvg_origin_impulse_atr[i] = origin_range_atr
+                fvg_origin_body_ratio[i] = body_ratio
+                fvg_quality[i] = 1.0
+
+                max_origin_index = min(n - 1, i + int(cfg.fvg_max_origin_age_bars))
+                max_fill_frac = 0.0
+                first_touch_index: int | None = None
+                touch_price = None
+                atr_at_touch = None
+
+                for j in range(i + 1, max_origin_index + 1):
+                    overlap = max(0.0, min(float(high[j]), upper) - max(float(low[j]), lower))
+                    fill_frac = overlap / gap_px
+                    if fill_frac > max_fill_frac:
+                        max_fill_frac = fill_frac
+                    if fill_frac > 0 and first_touch_index is None:
+                        first_touch_index = j
+                        if direction == "bull":
+                            touch_price = min(float(high[j]), upper)
+                        else:
+                            touch_price = max(float(low[j]), lower)
+                        atr_at_touch = float(atr[j]) if atr[j] is not None else 0.0
+
+                max_fill_frac = max(0.0, min(max_fill_frac, 1.0))
+                fvg_fill_frac[i] = max_fill_frac
+
+                if max_fill_frac == 0:
+                    fvg_fill_state[i] = "unfilled"
+                elif max_fill_frac >= 1.0:
+                    fvg_fill_state[i] = "filled"
+                elif max_fill_frac >= cfg.fvg_partial_fill_cut:
+                    fvg_fill_state[i] = "partially_filled"
+                else:
+                    fvg_fill_state[i] = "unfilled"
+
+                if first_touch_index is not None:
+                    duration = first_touch_index - i
+                    fvg_fill_duration_bars[i] = duration
+                    fvg_was_mitigated_flag[i] = True
+                    if duration > cfg.fvg_max_fill_bars:
+                        fvg_quality[i] = 0.0
+                    else:
+                        follow_end = min(n - 1, first_touch_index + int(cfg.displacement_followthrough_bars))
+                        if atr_at_touch is None or atr_at_touch <= eps or touch_price is None:
+                            fvg_quality[i] = 0.0
+                        else:
+                            if direction == "bull":
+                                max_future_high = max(float(val) for val in high[first_touch_index : follow_end + 1])
+                                reaction = max_future_high - float(touch_price)
+                            else:
+                                min_future_low = min(float(val) for val in low[first_touch_index : follow_end + 1])
+                                reaction = float(touch_price) - min_future_low
+                            if reaction < cfg.fvg_min_reaction_atr * atr_at_touch:
+                                fvg_quality[i] = 0.0
+
+            fvg_frames.append(
+                grp.with_columns(
+                    pl.Series(name="fvg_direction", values=fvg_direction, dtype=pl.Utf8),
+                    pl.Series(name="fvg_gap_ticks", values=fvg_gap_ticks, dtype=pl.Float64),
+                    pl.Series(name="fvg_upper", values=fvg_upper, dtype=pl.Float64),
+                    pl.Series(name="fvg_lower", values=fvg_lower, dtype=pl.Float64),
+                    pl.Series(name="fvg_mid", values=fvg_mid, dtype=pl.Float64),
+                    pl.Series(name="fvg_origin_ts", values=fvg_origin_ts, dtype=pl.Datetime("us")),
+                    pl.Series(name="fvg_age_bars", values=fvg_age_bars, dtype=pl.Int32),
+                    pl.Series(name="fvg_fill_frac", values=fvg_fill_frac, dtype=pl.Float64),
+                    pl.Series(name="fvg_fill_state", values=fvg_fill_state, dtype=pl.Utf8),
+                    pl.Series(name="fvg_fill_duration_bars", values=fvg_fill_duration_bars, dtype=pl.Int32),
+                    pl.Series(
+                        name="fvg_was_mitigated_flag",
+                        values=fvg_was_mitigated_flag,
+                        dtype=pl.Boolean,
+                    ),
+                    pl.Series(name="fvg_origin_impulse_atr", values=fvg_origin_impulse_atr, dtype=pl.Float64),
+                    pl.Series(name="fvg_origin_body_ratio", values=fvg_origin_body_ratio, dtype=pl.Float64),
+                    pl.Series(name="fvg_quality", values=fvg_quality, dtype=pl.Float64),
+                )
+            )
+
+        df = pl.concat(fvg_frames, how="vertical") if fvg_frames else df
+        df = df.with_columns(pl.lit(str(anchor_tf)).alias("fvg_origin_tf"))
+
         out = df.select(
             [
                 pl.col("instrument").cast(pl.Utf8, strict=False),
@@ -346,9 +484,19 @@ def build_feature_frame(
 
                 pl.col("fvg_direction"),
                 pl.col("fvg_gap_ticks"),
+                pl.col("fvg_upper"),
+                pl.col("fvg_lower"),
+                pl.col("fvg_mid"),
                 pl.col("fvg_origin_tf"),
                 pl.col("fvg_origin_ts"),
+                pl.col("fvg_age_bars"),
+                pl.col("fvg_fill_frac"),
                 pl.col("fvg_fill_state"),
+                pl.col("fvg_fill_duration_bars"),
+                pl.col("fvg_was_mitigated_flag"),
+                pl.col("fvg_origin_impulse_atr"),
+                pl.col("fvg_origin_body_ratio"),
+                pl.col("fvg_quality"),
                 pl.col("fvg_location_bucket"),
 
                 pl.col("ob_type"),
@@ -370,4 +518,3 @@ def build_feature_frame(
         frames.append(out)
 
     return pl.concat(frames, how="vertical") if frames else pl.DataFrame()
-
