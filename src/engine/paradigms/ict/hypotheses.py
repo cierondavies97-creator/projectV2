@@ -191,6 +191,16 @@ def _select_candidate_windows(df: pl.DataFrame) -> pl.DataFrame:
     if df is None or df.is_empty():
         return pl.DataFrame() if df is None else df
 
+    if "anchor_tf" in df.columns:
+        try:
+            anchor_tfs = set(
+                df.select(pl.col("anchor_tf").cast(pl.Utf8, strict=False).unique()).to_series().to_list()
+            )
+            if anchor_tfs.issubset({"S1", "M1"}):
+                return df
+        except Exception:
+            pass
+
     if "anchor_ts" in df.columns:
         try:
             hourly = df.filter(pl.col("anchor_ts").dt.minute() == 0)
