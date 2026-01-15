@@ -6,6 +6,7 @@ import polars as pl
 
 from engine.data.fills import write_fills_for_instrument_day
 from engine.data.orders import write_orders_for_instrument_day
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -258,6 +259,13 @@ def run(state: BatchState) -> BatchState:
       - 'orders'
       - 'fills'
     """
+    assert_contract_alignment(
+        step_name="fills_step",
+        writes=(
+            ContractWrite(table_key="orders", writer_fn="write_orders_for_instrument_day"),
+            ContractWrite(table_key="fills", writer_fn="write_fills_for_instrument_day"),
+        ),
+    )
     brackets = state.get_optional("brackets")
     if brackets is None or brackets.is_empty():
         state.set("orders", pl.DataFrame())

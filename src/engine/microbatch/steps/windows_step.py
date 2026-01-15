@@ -9,6 +9,7 @@ from engine.core.config_models import ClusterPlan, build_cluster_plan, load_reta
 from engine.core.schema import WINDOWS_SCHEMA
 from engine.core.timegrid import validate_anchor_grid
 from engine.data.windows import write_windows_for_instrument_tf_day
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 from engine.research.snapshots import load_snapshot_manifest
 
@@ -265,6 +266,10 @@ def _zones_context_from_zones_state(zones_state: pl.DataFrame) -> pl.DataFrame:
 
 
 def run(state: BatchState) -> BatchState:
+    assert_contract_alignment(
+        step_name="windows_step",
+        writes=(ContractWrite(table_key="windows", writer_fn="write_windows_for_instrument_tf_day"),),
+    )
     plan = _cluster_plan_for_state(state)
     td = state.key.trading_day
 
