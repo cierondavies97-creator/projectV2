@@ -11,8 +11,9 @@ import yaml
 
 from engine.core.schema import TRADE_PATHS_SCHEMA, polars_dtype
 from engine.data.decisions import write_decisions_for_stage
-from engine.microbatch.types import BatchState
 from engine.data.trade_paths import write_trade_paths_for_day
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
+from engine.microbatch.types import BatchState
 from engine.paradigms.api import get_hypotheses_builder
 from engine.research.snapshots import load_snapshot_manifest
 
@@ -263,6 +264,17 @@ def run(state: BatchState) -> BatchState:
       - 'decisions_hypotheses' (long format)
       - 'trade_paths' (long format)
     """
+    assert_contract_alignment(
+        step_name="hypotheses_step",
+        writes=(
+            ContractWrite(
+                table_key="decisions_hypotheses",
+                writer_fn="write_decisions_for_stage",
+                stage="hypotheses",
+            ),
+            ContractWrite(table_key="trade_paths", writer_fn="write_trade_paths_for_day"),
+        ),
+    )
     windows = state.get("windows")
     features = state.get("features")
 

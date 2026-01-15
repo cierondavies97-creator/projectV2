@@ -14,9 +14,9 @@ CANONICAL_TABLE_KEYS = (
     "macro",
     # Feature / memory model tables
     "features",
-    "windows",
     "zones_state",
     "pcr_a",
+    "windows",
     # Trade path and principle-level tables
     "trade_paths",
     "trade_clusters",
@@ -57,9 +57,9 @@ class BatchState:
 
         Feature / memory model tables:
           - 'features'             : feature frames per (instrument, anchor_tf)
-          - 'windows'              : anchor-time windows for this run_id/day/cluster
           - 'zones_state'          : ZMF + VP state
           - 'pcr_a'                : PCrA microstructure table
+          - 'windows'              : anchor-time windows for this run_id/day/cluster
 
         Trade path / principle level:
           - 'trade_paths'          : trade paths of record
@@ -73,8 +73,8 @@ class BatchState:
           - 'decisions_gatekeeper' : gatekeeper-approved decisions
           - 'decisions_portfolio'  : portfolio-level allocations/decisions
           - 'brackets'             : final bracket plans (entries, stops, TPs)
-          - 'orders'             : order events (SIM/backtest or broker adapter)
-          - 'fills'              : fills (SIM/backtest or broker adapter)
+          - 'orders'               : order events (SIM/backtest or broker adapter)
+          - 'fills'                : fills (SIM/backtest or broker adapter)
 
         Reports / diagnostics:
           - 'critic'               : critic diagnostics
