@@ -8,7 +8,62 @@ from typing import Any
 
 import polars as pl
 
+from engine.core.schema import enforce_table
+from engine.io.parquet_io import write_parquet
+from engine.io.paths import trade_paths_dir
+
 log = logging.getLogger(__name__)
+
+_EVAL_COLS = ("paradigm_id", "principle_id", "candidate_id", "experiment_id")
+
+
+def _as_str(v: object | None, *, default: str = "∅") -> str:
+    if v is None:
+        return default
+    s = str(v).strip()
+    return s if s else default
+
+
+def _ensure_identity_columns(ctx: Any, trading_day: date, df: pl.DataFrame) -> pl.DataFrame:
+    exprs: list[pl.Expr] = []
+    if "snapshot_id" not in df.columns:
+        exprs.append(pl.lit(getattr(ctx, "snapshot_id", "")).alias("snapshot_id"))
+    if "run_id" not in df.columns:
+        exprs.append(pl.lit(getattr(ctx, "run_id", "")).alias("run_id"))
+    if "mode" not in df.columns:
+        exprs.append(pl.lit(getattr(ctx, "mode", "")).alias("mode"))
+    if "dt" not in df.columns:
+        exprs.append(pl.lit(trading_day).cast(pl.Date).alias("dt"))
+    else:
+        exprs.append(pl.col("dt").cast(pl.Date, strict=False).alias("dt"))
+    return df.with_columns(exprs) if exprs else df
+
+
+def _normalize_eval_cols(df: pl.DataFrame) -> pl.DataFrame:
+    out = df
+    for col in _EVAL_COLS:
+        if col not in out.columns:
+            out = out.with_columns(pl.lit("∅").cast(pl.Utf8).alias(col))
+        else:
+            out = out.with_columns(
+                pl.when(pl.col(col).is_null() | (pl.col(col).cast(pl.Utf8).str.strip_chars() == ""))
+                .then(pl.lit("∅"))
+                .otherwise(pl.col(col).cast(pl.Utf8))
+                .alias(col)
+            )
+    return out
+
+
+def _resolve_instrument(df: pl.DataFrame, instrument: str | None) -> str:
+    if instrument:
+        return instrument
+    if "instrument" not in df.columns:
+        raise ValueError("write_trade_paths_for_day requires instrument or an instrument column in df")
+    unique = df.select(pl.col("instrument").unique()).to_series().to_list()
+    unique = [u for u in unique if u is not None]
+    if len(unique) != 1:
+        raise ValueError(f"write_trade_paths_for_day expected a single instrument, got {unique}")
+    return str(unique[0])
 
 
 def write_trade_paths_for_day(
@@ -25,17 +80,9 @@ def write_trade_paths_for_day(
     Persist the trade_paths partition for one trading day (optionally per-instrument).
 
     Compatibility:
-      - hypotheses_step calls this with df=... (see hypotheses_step.py). :contentReference[oaicite:1]{index=1}
+      - hypotheses_step calls this with df=...
       - Some older callers may pass trade_paths=...
-
-    Determinism:
-      - No fitting/training; only writing.
-      - Does not mutate configs.
-
-    Returns:
-      - Path to written output if written; else None.
     """
-    # Accept either 'df' or 'trade_paths'
     if df is None:
         df = trade_paths
 
@@ -43,36 +90,26 @@ def write_trade_paths_for_day(
         log.info("write_trade_paths_for_day: empty; skipping write")
         return None
 
-    # Prefer canonical schema-aware writer if present
-    try:
-        from engine.core.schema import TRADE_PATHS_SCHEMA  # type: ignore
-        from engine.data.writer import write_table  # type: ignore
+    if trading_day is None:
+        raise ValueError("write_trade_paths_for_day requires trading_day")
 
-        # write_table should handle partitioning based on schema.partition_cols
-        out = write_table(ctx=ctx, schema=TRADE_PATHS_SCHEMA, df=df, trading_day=trading_day, sandbox=sandbox)
-        log.info("write_trade_paths_for_day: wrote via write_table -> %s", out)
-        return out
-    except Exception as e:
-        log.debug("write_trade_paths_for_day: canonical write_table not available (%s); using fallback", e)
+    out = _normalize_eval_cols(df)
+    out = _ensure_identity_columns(ctx, trading_day, out)
+    out = enforce_table(out, "trade_paths", allow_extra=True, reorder=True)
 
-    # Fallback: deterministic parquet path under ctx.artifacts_root (if available)
-    root = getattr(ctx, "artifacts_root", None) or getattr(ctx, "root", None)
-    if not root:
-        log.warning("write_trade_paths_for_day: no writer available and ctx has no artifacts_root; no-op")
-        return None
+    inst = _resolve_instrument(out, instrument)
+    eval_vals = {col: _as_str(out.get_column(col)[0]) for col in _EVAL_COLS}
 
-    root_path = Path(root)
-    run_id = getattr(ctx, "run_id", "unknown_run")
-    snap = getattr(ctx, "snapshot_id", "unknown_snapshot")
-    mode = getattr(ctx, "mode", "unknown_mode")
-    dt = trading_day.isoformat() if trading_day else "unknown_dt"
-    inst = instrument or "unknown_instrument"
-
-    # Keep layout stable; avoid silently changing existing partitioning rules
-    out_dir = root_path / "data" / "trade_paths" / f"snapshot_id={snap}" / f"run_id={run_id}" / f"mode={mode}" / f"instrument={inst}" / f"dt={dt}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    out_file = out_dir / "part-0000.parquet"
-    df.write_parquet(out_file)
-    log.info("write_trade_paths_for_day: wrote fallback parquet -> %s", out_file)
-    return out_file
+    out_dir = trade_paths_dir(
+        ctx=ctx,
+        trading_day=trading_day,
+        instrument=inst,
+        paradigm_id=eval_vals["paradigm_id"],
+        principle_id=eval_vals["principle_id"],
+        candidate_id=eval_vals["candidate_id"],
+        experiment_id=eval_vals["experiment_id"],
+        sandbox=sandbox,
+    )
+    write_parquet(out, out_dir, file_name="0000.parquet")
+    log.info("write_trade_paths_for_day: wrote %d rows to %s", out.height, out_dir / "0000.parquet")
+    return out_dir / "0000.parquet"
