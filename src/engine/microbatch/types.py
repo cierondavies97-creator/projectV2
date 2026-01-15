@@ -9,14 +9,60 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def _ensure_pkg(name: str) -> types.ModuleType:
-    if name in sys.modules:
-        return sys.modules[name]
-    pkg = types.ModuleType(name)
-    pkg.__path__ = [str(SRC / name.replace(".", "/"))]
-    sys.modules[name] = pkg
-    return pkg
+CANONICAL_TABLE_KEYS = (
+    # Raw-ish inputs
+    "candles",
+    "ticks",
+    "external",
+    "macro",
+    # Feature / memory model tables
+    "features",
+    "zones_state",
+    "pcr_a",
+    "windows",
+    # Trade path and principle-level tables
+    "trade_paths",
+    "trade_clusters",
+    "principles_context",
+    # Decision / execution tables
+    "decisions_hypotheses",
+    "decisions_critic",
+    "decisions_pretrade",
+    "decisions_gatekeeper",
+    "decisions_portfolio",
+    "brackets",
+    "orders",
+    "fills",
+    # Reports / diagnostics
+    "critic",
+    "reports",
+)
 
+
+@dataclass
+class BatchState:
+    """
+    Shared state passed between microbatch pipeline steps.
+
+    - ctx, key identify the run and unit of work:
+        * ctx: RunContext (env, mode, snapshot_id, run_id, etc.)
+        * key: MicrobatchKey (trading_day, cluster_id)
+
+    - tables is a mapping from canonical table name -> Polars DataFrame.
+
+      The canonical keys are:
+
+        Raw inputs:
+          - 'candles'              : candles for this trading_day & cluster
+          - 'ticks'                : ticks for this trading_day & cluster
+          - 'external'             : external series for this day & cluster
+          - 'macro'                : macro / calendar state for this day
+
+        Feature / memory model tables:
+          - 'features'             : feature frames per (instrument, anchor_tf)
+          - 'zones_state'          : ZMF + VP state
+          - 'pcr_a'                : PCrA microstructure table
+          - 'windows'              : anchor-time windows for this run_id/day/cluster
 
 def _load_module(name: str, path: Path) -> types.ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -27,6 +73,15 @@ def _load_module(name: str, path: Path) -> types.ModuleType:
     spec.loader.exec_module(module)
     return module
 
+        Decision / execution:
+          - 'decisions_hypotheses' : raw hypothesis decisions
+          - 'decisions_critic'     : critic-scored decisions
+          - 'decisions_pretrade'   : pretrade-filtered decisions
+          - 'decisions_gatekeeper' : gatekeeper-approved decisions
+          - 'decisions_portfolio'  : portfolio-level allocations/decisions
+          - 'brackets'             : final bracket plans (entries, stops, TPs)
+          - 'orders'               : order events (SIM/backtest or broker adapter)
+          - 'fills'                : fills (SIM/backtest or broker adapter)
 
 _ensure_pkg("engine")
 _ensure_pkg("engine.microbatch")
