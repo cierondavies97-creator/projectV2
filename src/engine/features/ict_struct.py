@@ -59,6 +59,15 @@ class IctStructCfg:
     ob_min_reaction_atr: float = 0.3
     ob_breaker_confirm_bars: int = 2
 
+    swing_lookback_bars: int = 3
+    swing_strength_min_bars: int = 5
+    swing_trend_dir_window: int = 6
+    bos_window_bars_min: int = 2
+    bos_window_bars_max: int = 20
+    bos_min_distance_ticks: float = 4.0
+    choch_z_cut: float = 1.0
+    choch_min_distance_ticks: float = 4.0
+
 
 def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str, Any] | None) -> IctStructCfg:
     # Lightweight merge: registry_entry overrides family_cfg overrides defaults.
@@ -106,6 +115,14 @@ def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str,
         ob_max_origin_age_bars=_get_int("ob_max_origin_age_bars", 300),
         ob_min_reaction_atr=_get_float("ob_min_reaction_atr", 0.3),
         ob_breaker_confirm_bars=_get_int("ob_breaker_confirm_bars", 2),
+        swing_lookback_bars=_get_int("swing_lookback_bars", 3),
+        swing_strength_min_bars=_get_int("swing_strength_min_bars", 5),
+        swing_trend_dir_window=_get_int("swing_trend_dir_window", 6),
+        bos_window_bars_min=_get_int("bos_window_bars_min", 2),
+        bos_window_bars_max=_get_int("bos_window_bars_max", 20),
+        bos_min_distance_ticks=_get_float("bos_min_distance_ticks", 4.0),
+        choch_z_cut=_get_float("choch_z_cut", 1.0),
+        choch_min_distance_ticks=_get_float("choch_min_distance_ticks", 4.0),
     )
 
 
@@ -304,6 +321,7 @@ def build_feature_frame(
             open_ = grp.get_column("open").to_list()
             close = grp.get_column("close").to_list()
             atr = grp.get_column("atr_anchor").to_list()
+            atr_z = grp.get_column("atr_z").to_list()
             ts_list = grp.get_column("ts").to_list()
             n = len(high)
 
@@ -358,6 +376,24 @@ def build_feature_frame(
             ob_breaker_flag = [False] * n
             ob_breaker_dir = [None] * n
             ob_breaker_ts = [None] * n
+
+            swing_high = [None] * n
+            swing_low = [None] * n
+            swing_strength = [None] * n
+            swing_trend_dir = ["range"] * n
+            bos_flag = [False] * n
+            bos_dir = ["none"] * n
+            bos_level_px = [None] * n
+            bos_distance_ticks = [None] * n
+            bos_age_bars = [None] * n
+            choch_flag = [False] * n
+            choch_dir = ["none"] * n
+            choch_level_px = [None] * n
+            choch_distance_ticks = [None] * n
+            choch_age_bars = [None] * n
+            struct_state = ["range"] * n
+            struct_trend_strength = [0.0] * n
+            bos_type = ["none"] * n
 
             for i in range(n):
                 lookback_start = max(0, i - int(cfg.ob_lookback_bars))
@@ -562,6 +598,140 @@ def build_feature_frame(
                             if reaction < cfg.fvg_min_reaction_atr * atr_at_touch:
                                 fvg_quality[i] = 0.0
 
+            swing_window = max(1, int(cfg.swing_lookback_bars))
+            swing_min_bars = int(cfg.swing_strength_min_bars)
+            trend_window = int(cfg.swing_trend_dir_window)
+            last_swing_high_idx = None
+            last_swing_low_idx = None
+            last_bos_idx = None
+            last_choch_idx = None
+            struct_state_current = "range"
+            swing_points: list[tuple[int, str, float]] = []
+
+            def _trend_from_swings(points: list[tuple[int, str, float]]) -> tuple[str, float]:
+                if len(points) < 2:
+                    return "range", 0.0
+                highs = [p for p in points if p[1] == "high"]
+                lows = [p for p in points if p[1] == "low"]
+                if len(highs) < 2 or len(lows) < 2:
+                    return "range", 0.0
+                high_dirs = [1 if highs[i][2] > highs[i - 1][2] else -1 for i in range(1, len(highs))]
+                low_dirs = [1 if lows[i][2] > lows[i - 1][2] else -1 for i in range(1, len(lows))]
+                high_score = sum(high_dirs)
+                low_score = sum(low_dirs)
+                if high_score > 0 and low_score > 0:
+                    trend = "up"
+                elif high_score < 0 and low_score < 0:
+                    trend = "down"
+                else:
+                    trend = "range"
+
+                xs = [p[0] for p in points]
+                ys = [p[2] for p in points]
+                x_mean = sum(xs) / len(xs)
+                y_mean = sum(ys) / len(ys)
+                cov = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+                var = sum((x - x_mean) ** 2 for x in xs)
+                slope = cov / var if var > eps else 0.0
+                y_var = sum((y - y_mean) ** 2 for y in ys) / len(ys)
+                strength = slope / (y_var**0.5 + eps)
+                return trend, strength
+
+            for i in range(n):
+                if i < swing_window or i + swing_window >= n:
+                    if last_bos_idx is not None:
+                        bos_age_bars[i] = i - last_bos_idx
+                    if last_choch_idx is not None:
+                        choch_age_bars[i] = i - last_choch_idx
+                    struct_state[i] = struct_state_current
+                    continue
+
+                high_slice = high[i - swing_window : i + swing_window + 1]
+                low_slice = low[i - swing_window : i + swing_window + 1]
+                is_swing_high = float(high[i]) == max(high_slice)
+                is_swing_low = float(low[i]) == min(low_slice)
+                if is_swing_high:
+                    if last_swing_low_idx is None or (i - last_swing_low_idx) >= swing_min_bars:
+                        swing_high[i] = float(high[i])
+                        strength = i - last_swing_low_idx if last_swing_low_idx is not None else None
+                        swing_strength[i] = strength
+                        last_swing_high_idx = i
+                        swing_points.append((i, "high", float(high[i])))
+                if is_swing_low:
+                    if last_swing_high_idx is None or (i - last_swing_high_idx) >= swing_min_bars:
+                        swing_low[i] = float(low[i])
+                        strength = i - last_swing_high_idx if last_swing_high_idx is not None else None
+                        swing_strength[i] = strength
+                        last_swing_low_idx = i
+                        swing_points.append((i, "low", float(low[i])))
+
+                window_points = swing_points[-trend_window:] if trend_window > 0 else swing_points
+                trend_dir, trend_strength = _trend_from_swings(window_points)
+                swing_trend_dir[i] = trend_dir
+                struct_trend_strength[i] = trend_strength
+
+                last_high_idx = last_swing_high_idx
+                last_low_idx = last_swing_low_idx
+                if last_high_idx is not None:
+                    bars_since_high = i - last_high_idx
+                    if int(cfg.bos_window_bars_min) <= bars_since_high <= int(cfg.bos_window_bars_max):
+                        bos_level = float(high[last_high_idx])
+                        if float(close[i]) > bos_level + cfg.bos_min_distance_ticks * tick_size:
+                            bos_flag[i] = True
+                            bos_dir[i] = "bullish"
+                            bos_level_px[i] = bos_level
+                            bos_distance_ticks[i] = (float(close[i]) - bos_level) / tick_size if tick_size > eps else 0.0
+                            bos_type[i] = "bos_up"
+                            last_bos_idx = i
+                            if struct_state_current in {"range", "bullish"}:
+                                struct_state_current = "bullish"
+                            else:
+                                struct_state_current = "bullish"
+                if last_low_idx is not None:
+                    bars_since_low = i - last_low_idx
+                    if int(cfg.bos_window_bars_min) <= bars_since_low <= int(cfg.bos_window_bars_max):
+                        bos_level = float(low[last_low_idx])
+                        if float(close[i]) < bos_level - cfg.bos_min_distance_ticks * tick_size:
+                            bos_flag[i] = True
+                            bos_dir[i] = "bearish"
+                            bos_level_px[i] = bos_level
+                            bos_distance_ticks[i] = (bos_level - float(close[i])) / tick_size if tick_size > eps else 0.0
+                            bos_type[i] = "bos_down"
+                            last_bos_idx = i
+                            if struct_state_current in {"range", "bearish"}:
+                                struct_state_current = "bearish"
+                            else:
+                                struct_state_current = "bearish"
+
+                if struct_state_current == "bullish" and last_low_idx is not None:
+                    bos_level = float(low[last_low_idx])
+                    if float(close[i]) < bos_level - cfg.choch_min_distance_ticks * tick_size:
+                        atr_z_val = float(atr_z[i]) if atr_z[i] is not None else 0.0
+                        if atr_z_val >= cfg.choch_z_cut:
+                            choch_flag[i] = True
+                            choch_dir[i] = "bearish"
+                            choch_level_px[i] = bos_level
+                            choch_distance_ticks[i] = (bos_level - float(close[i])) / tick_size if tick_size > eps else 0.0
+                            last_choch_idx = i
+                            struct_state_current = "transition"
+                if struct_state_current == "bearish" and last_high_idx is not None:
+                    bos_level = float(high[last_high_idx])
+                    if float(close[i]) > bos_level + cfg.choch_min_distance_ticks * tick_size:
+                        atr_z_val = float(atr_z[i]) if atr_z[i] is not None else 0.0
+                        if atr_z_val >= cfg.choch_z_cut:
+                            choch_flag[i] = True
+                            choch_dir[i] = "bullish"
+                            choch_level_px[i] = bos_level
+                            choch_distance_ticks[i] = (float(close[i]) - bos_level) / tick_size if tick_size > eps else 0.0
+                            last_choch_idx = i
+                            struct_state_current = "transition"
+
+                if last_bos_idx is not None:
+                    bos_age_bars[i] = i - last_bos_idx
+                if last_choch_idx is not None:
+                    choch_age_bars[i] = i - last_choch_idx
+                struct_state[i] = struct_state_current
+
             feature_frames.append(
                 grp.with_columns(
                     pl.Series(name="fvg_direction", values=fvg_direction, dtype=pl.Utf8),
@@ -595,6 +765,23 @@ def build_feature_frame(
                     pl.Series(name="ob_breaker_flag", values=ob_breaker_flag, dtype=pl.Boolean),
                     pl.Series(name="ob_breaker_dir", values=ob_breaker_dir, dtype=pl.Utf8),
                     pl.Series(name="ob_breaker_ts", values=ob_breaker_ts, dtype=pl.Datetime("us")),
+                    pl.Series(name="ict_struct_swing_high", values=swing_high, dtype=pl.Float64),
+                    pl.Series(name="ict_struct_swing_low", values=swing_low, dtype=pl.Float64),
+                    pl.Series(name="ict_struct_swing_strength", values=swing_strength, dtype=pl.Float64),
+                    pl.Series(name="ict_struct_swing_trend_dir", values=swing_trend_dir, dtype=pl.Utf8),
+                    pl.Series(name="bos_flag", values=bos_flag, dtype=pl.Boolean),
+                    pl.Series(name="bos_dir", values=bos_dir, dtype=pl.Utf8),
+                    pl.Series(name="bos_level_px", values=bos_level_px, dtype=pl.Float64),
+                    pl.Series(name="bos_distance_ticks", values=bos_distance_ticks, dtype=pl.Float64),
+                    pl.Series(name="bos_age_bars", values=bos_age_bars, dtype=pl.Int32),
+                    pl.Series(name="choch_flag", values=choch_flag, dtype=pl.Boolean),
+                    pl.Series(name="choch_dir", values=choch_dir, dtype=pl.Utf8),
+                    pl.Series(name="choch_level_px", values=choch_level_px, dtype=pl.Float64),
+                    pl.Series(name="choch_distance_ticks", values=choch_distance_ticks, dtype=pl.Float64),
+                    pl.Series(name="choch_age_bars", values=choch_age_bars, dtype=pl.Int32),
+                    pl.Series(name="struct_state", values=struct_state, dtype=pl.Utf8),
+                    pl.Series(name="struct_trend_strength", values=struct_trend_strength, dtype=pl.Float64),
+                    pl.Series(name="bos_type", values=bos_type, dtype=pl.Utf8),
                 )
             )
 
@@ -637,6 +824,23 @@ def build_feature_frame(
                 pl.col("ob_breaker_flag"),
                 pl.col("ob_breaker_dir"),
                 pl.col("ob_breaker_ts"),
+                pl.col("ict_struct_swing_high"),
+                pl.col("ict_struct_swing_low"),
+                pl.col("ict_struct_swing_strength"),
+                pl.col("ict_struct_swing_trend_dir"),
+                pl.col("bos_flag"),
+                pl.col("bos_dir"),
+                pl.col("bos_level_px"),
+                pl.col("bos_distance_ticks"),
+                pl.col("bos_age_bars"),
+                pl.col("choch_flag"),
+                pl.col("choch_dir"),
+                pl.col("choch_level_px"),
+                pl.col("choch_distance_ticks"),
+                pl.col("choch_age_bars"),
+                pl.col("struct_state"),
+                pl.col("struct_trend_strength"),
+                pl.col("bos_type"),
 
                 pl.col("eqh_flag"),
                 pl.col("eql_flag"),
