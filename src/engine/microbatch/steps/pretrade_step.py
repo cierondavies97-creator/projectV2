@@ -8,6 +8,7 @@ import polars as pl
 
 from engine.core.config_models import load_retail_config
 from engine.data.decisions import write_decisions_for_stage
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -390,6 +391,16 @@ def _apply_macro_policy(
 
 
 def run(state: BatchState) -> BatchState:
+    assert_contract_alignment(
+        step_name="pretrade_step",
+        writes=(
+            ContractWrite(
+                table_key="decisions_pretrade",
+                writer_fn="write_decisions_for_stage",
+                stage="pretrade",
+            ),
+        ),
+    )
     ctx = state.ctx
 
     # Correct input: decisions_critic
@@ -437,7 +448,6 @@ def run(state: BatchState) -> BatchState:
         )
 
     return state
-
 
 
 
