@@ -6,6 +6,7 @@ from typing import Iterable
 import polars as pl
 
 from engine.data.run_reports import write_run_reports_for_cluster_day
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 
 log = logging.getLogger(__name__)
@@ -349,6 +350,10 @@ def run(state: BatchState) -> BatchState:
     Outputs:
       - 'reports'
     """
+    assert_contract_alignment(
+        step_name="reports_step",
+        writes=(ContractWrite(table_key="reports", writer_fn="write_run_reports_for_cluster_day"),),
+    )
     windows = state.get_optional("windows")
     trade_paths = state.get_optional("trade_paths")
     critic = state.get_optional("critic")

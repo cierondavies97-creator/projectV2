@@ -22,6 +22,7 @@ from engine.data.features import write_features_for_instrument_tf_day
 from engine.data.pcra import write_pcra_for_instrument_tf_day
 from engine.data.zones_state import write_zones_state_for_instrument_tf_day
 from engine.features import FeatureBuildContext
+from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 from engine.research.snapshots import load_snapshot_manifest
 
@@ -388,6 +389,14 @@ def run(state: BatchState) -> BatchState:
       - 'zones_state'
       - 'pcr_a'
     """
+    assert_contract_alignment(
+        step_name="features_step",
+        writes=(
+            ContractWrite(table_key="features", writer_fn="write_features_for_instrument_tf_day"),
+            ContractWrite(table_key="zones_state", writer_fn="write_zones_state_for_instrument_tf_day"),
+            ContractWrite(table_key="pcr_a", writer_fn="write_pcra_for_instrument_tf_day"),
+        ),
+    )
     plan = _cluster_plan_for_state(state)
 
     candles = state.get("candles")

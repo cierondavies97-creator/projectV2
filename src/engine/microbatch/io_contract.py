@@ -167,7 +167,7 @@ CONTRACT: dict[str, TableContract] = {
         # Current code persists early (hypotheses_step) but then the table is mutated later in-memory.
         persisted_current=True,
         persisted_target=True,
-        owner_step_current="reports_step",
+        owner_step_current="hypotheses_step",
         # Phase-B target (recommended): persist once at the end, after all in-memory mutations.
         owner_step_target="reports_step",
         writer_fn="write_trade_paths_for_day",
