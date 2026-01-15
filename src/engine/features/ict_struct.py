@@ -1010,6 +1010,485 @@ def build_feature_frame(
         df = pl.concat(feature_frames, how="vertical") if feature_frames else df
         df = df.with_columns(pl.lit(str(anchor_tf)).alias("fvg_origin_tf"))
 
+        # -----------------------------
+        # FVG/OB full logic (per instrument)
+        # -----------------------------
+        feature_frames: list[pl.DataFrame] = []
+        eps = 1e-9
+        for inst, grp in df.partition_by("instrument", maintain_order=True, as_dict=True).items():
+            tick_size = tick_map.get(str(inst), tick_map.get("__default__", 0.0001))
+            high = grp.get_column("high").to_list()
+            low = grp.get_column("low").to_list()
+            open_ = grp.get_column("open").to_list()
+            close = grp.get_column("close").to_list()
+            atr = grp.get_column("atr_anchor").to_list()
+            atr_z = grp.get_column("atr_z").to_list()
+            ts_list = grp.get_column("ts").to_list()
+            n = len(high)
+
+            displacement_flag = [False] * n
+            displacement_dir = ["none"] * n
+            displacement_range_atr = [0.0] * n
+            displacement_body_ratio = [0.0] * n
+            displacement_close_loc = [0.0] * n
+
+            for i in range(n):
+                bar_range = float(high[i]) - float(low[i])
+                atr_val = float(atr[i]) if atr[i] is not None else 0.0
+                range_atr = bar_range / atr_val if atr_val > eps else 0.0
+                body_ratio = abs(float(close[i]) - float(open_[i])) / max(bar_range, eps)
+                close_loc = (float(close[i]) - float(low[i])) / max(bar_range, eps)
+                direction = "up" if float(close[i]) >= float(open_[i]) else "down"
+                displacement_range_atr[i] = range_atr
+                displacement_body_ratio[i] = body_ratio
+                displacement_close_loc[i] = close_loc
+                displacement_dir[i] = direction
+                if range_atr >= cfg.displacement_range_atr_min and body_ratio >= cfg.displacement_body_ratio_min:
+                    if direction == "up" and close_loc >= cfg.displacement_close_loc_min:
+                        displacement_flag[i] = True
+                    elif direction == "down" and close_loc <= (1.0 - cfg.displacement_close_loc_min):
+                        displacement_flag[i] = True
+
+            fvg_direction = ["none"] * n
+            fvg_gap_ticks = [0.0] * n
+            fvg_upper = [None] * n
+            fvg_lower = [None] * n
+            fvg_mid = [None] * n
+            fvg_origin_ts = [None] * n
+            fvg_age_bars = [None] * n
+            fvg_fill_frac = [0.0] * n
+            fvg_fill_state = ["none"] * n
+            fvg_fill_duration_bars = [None] * n
+            fvg_was_mitigated_flag = [False] * n
+            fvg_origin_impulse_atr = [None] * n
+            fvg_origin_body_ratio = [None] * n
+            fvg_quality = [0.0] * n
+
+            ob_type = ["none"] * n
+            ob_high = [None] * n
+            ob_low = [None] * n
+            ob_mid = [None] * n
+            ob_height_ticks = [None] * n
+            ob_origin_ts = [None] * n
+            ob_age_bars = [None] * n
+            ob_distance_ticks = [None] * n
+            ob_freshness_bucket = ["none"] * n
+            ob_quality = [0.0] * n
+            ob_breaker_flag = [False] * n
+            ob_breaker_dir = [None] * n
+            ob_breaker_ts = [None] * n
+
+            swing_high = [None] * n
+            swing_low = [None] * n
+            swing_strength = [None] * n
+            swing_trend_dir = ["range"] * n
+            bos_flag = [False] * n
+            bos_dir = ["none"] * n
+            bos_level_px = [None] * n
+            bos_distance_ticks = [None] * n
+            bos_age_bars = [None] * n
+            choch_flag = [False] * n
+            choch_dir = ["none"] * n
+            choch_level_px = [None] * n
+            choch_distance_ticks = [None] * n
+            choch_age_bars = [None] * n
+            struct_state = ["range"] * n
+            struct_trend_strength = [0.0] * n
+            bos_type = ["none"] * n
+
+            for i in range(n):
+                lookback_start = max(0, i - int(cfg.ob_lookback_bars))
+                disp_idx = None
+                for j in range(i, lookback_start - 1, -1):
+                    if displacement_flag[j]:
+                        disp_idx = j
+                        break
+                if disp_idx is None:
+                    continue
+
+                disp_direction = displacement_dir[disp_idx]
+                if disp_direction == "up":
+                    ob_idx = None
+                    for j in range(disp_idx - 1, -1, -1):
+                        if float(close[j]) < float(open_[j]):
+                            ob_idx = j
+                            break
+                    ob_dir = "bullish"
+                else:
+                    ob_idx = None
+                    for j in range(disp_idx - 1, -1, -1):
+                        if float(close[j]) > float(open_[j]):
+                            ob_idx = j
+                            break
+                    ob_dir = "bearish"
+
+                if ob_idx is None:
+                    continue
+
+                if displacement_range_atr[disp_idx] < cfg.ob_min_impulse_range_atr or (
+                    displacement_body_ratio[disp_idx] < cfg.ob_min_body_ratio
+                ):
+                    continue
+
+                ob_high_val = float(high[ob_idx])
+                ob_low_val = float(low[ob_idx])
+                ob_height = ob_high_val - ob_low_val
+                ob_height_ticks_val = ob_height / tick_size if tick_size > eps else 0.0
+                if ob_height_ticks_val < cfg.ob_height_ticks_min:
+                    continue
+
+                age_bars = i - ob_idx
+                if age_bars > cfg.ob_max_origin_age_bars:
+                    continue
+
+                ob_type[i] = ob_dir
+                ob_high[i] = ob_high_val
+                ob_low[i] = ob_low_val
+                ob_mid_val = (ob_high_val + ob_low_val) / 2.0
+                ob_mid[i] = ob_mid_val
+                ob_height_ticks[i] = ob_height_ticks_val
+                ob_origin_ts[i] = ts_list[ob_idx]
+                ob_age_bars[i] = age_bars
+                ob_distance_ticks[i] = abs(float(close[i]) - ob_mid_val) / tick_size if tick_size > eps else 0.0
+                ob_quality[i] = 1.0
+
+                first_touch_index = None
+                touch_price = None
+                atr_at_touch = None
+                for j in range(ob_idx + 1, i + 1):
+                    if float(low[j]) <= ob_high_val and float(high[j]) >= ob_low_val:
+                        first_touch_index = j
+                        if ob_dir == "bullish":
+                            touch_price = min(float(high[j]), ob_high_val)
+                        else:
+                            touch_price = max(float(low[j]), ob_low_val)
+                        atr_at_touch = float(atr[j]) if atr[j] is not None else 0.0
+                        break
+
+                if first_touch_index is None:
+                    if age_bars > cfg.ob_mitigation_bars_max:
+                        ob_freshness_bucket[i] = "old"
+                    else:
+                        ob_freshness_bucket[i] = "fresh"
+                else:
+                    ob_freshness_bucket[i] = "mitigated"
+                    follow_end = min(n - 1, first_touch_index + int(cfg.displacement_followthrough_bars))
+                    if atr_at_touch is None or atr_at_touch <= eps or touch_price is None:
+                        ob_quality[i] = 0.0
+                    else:
+                        if ob_dir == "bullish":
+                            max_future_high = max(float(val) for val in high[first_touch_index : follow_end + 1])
+                            reaction = max_future_high - float(touch_price)
+                        else:
+                            min_future_low = min(float(val) for val in low[first_touch_index : follow_end + 1])
+                            reaction = float(touch_price) - min_future_low
+                        if reaction < cfg.ob_min_reaction_atr * atr_at_touch:
+                            ob_quality[i] = 0.0
+
+                confirm_bars = int(cfg.ob_breaker_confirm_bars)
+                if confirm_bars > 0:
+                    count = 0
+                    breaker_start = None
+                    for j in range(ob_idx + 1, i + 1):
+                        if ob_dir == "bullish":
+                            breaker = float(close[j]) < ob_low_val
+                        else:
+                            breaker = float(close[j]) > ob_high_val
+                        if breaker:
+                            count += 1
+                            if count >= confirm_bars:
+                                breaker_start = j - confirm_bars + 1
+                                break
+                        else:
+                            count = 0
+                    if breaker_start is not None:
+                        ob_breaker_flag[i] = True
+                        ob_breaker_dir[i] = "down" if ob_dir == "bullish" else "up"
+                        ob_breaker_ts[i] = ts_list[breaker_start]
+
+            for i in range(2, n):
+                bull_gap = low[i] > high[i - 2]
+                bear_gap = high[i] < low[i - 2]
+                if not bull_gap and not bear_gap:
+                    continue
+
+                if bull_gap:
+                    lower = float(high[i - 2])
+                    upper = float(low[i])
+                    direction = "bull"
+                else:
+                    upper = float(low[i - 2])
+                    lower = float(high[i])
+                    direction = "bear"
+
+                gap_px = upper - lower
+                if gap_px <= 0:
+                    continue
+                gap_ticks = gap_px / tick_size if tick_size > eps else 0.0
+                if gap_ticks < cfg.fvg_min_gap_ticks:
+                    continue
+
+                origin_range = float(high[i - 1]) - float(low[i - 1])
+                atr_val = float(atr[i - 1]) if atr[i - 1] is not None else 0.0
+                origin_range_atr = origin_range / atr_val if atr_val > eps else 0.0
+                body_ratio = abs(float(close[i - 1]) - float(open_[i - 1])) / max(origin_range, eps)
+                if (origin_range_atr < cfg.fvg_origin_impulse_range_atr_min) or (
+                    body_ratio < cfg.fvg_origin_body_ratio_min
+                ):
+                    continue
+
+                fvg_direction[i] = direction
+                fvg_gap_ticks[i] = gap_ticks
+                fvg_upper[i] = upper
+                fvg_lower[i] = lower
+                fvg_mid[i] = (upper + lower) / 2.0
+                fvg_origin_ts[i] = ts_list[i]
+                fvg_age_bars[i] = 0
+                fvg_origin_impulse_atr[i] = origin_range_atr
+                fvg_origin_body_ratio[i] = body_ratio
+                fvg_quality[i] = 1.0
+
+                max_origin_index = min(n - 1, i + int(cfg.fvg_max_origin_age_bars))
+                max_fill_frac = 0.0
+                first_touch_index: int | None = None
+                touch_price = None
+                atr_at_touch = None
+
+                for j in range(i + 1, max_origin_index + 1):
+                    overlap = max(0.0, min(float(high[j]), upper) - max(float(low[j]), lower))
+                    fill_frac = overlap / gap_px
+                    if fill_frac > max_fill_frac:
+                        max_fill_frac = fill_frac
+                    if fill_frac > 0 and first_touch_index is None:
+                        first_touch_index = j
+                        if direction == "bull":
+                            touch_price = min(float(high[j]), upper)
+                        else:
+                            touch_price = max(float(low[j]), lower)
+                        atr_at_touch = float(atr[j]) if atr[j] is not None else 0.0
+
+                max_fill_frac = max(0.0, min(max_fill_frac, 1.0))
+                fvg_fill_frac[i] = max_fill_frac
+
+                if max_fill_frac == 0:
+                    fvg_fill_state[i] = "unfilled"
+                elif max_fill_frac >= 1.0:
+                    fvg_fill_state[i] = "filled"
+                elif max_fill_frac >= cfg.fvg_partial_fill_cut:
+                    fvg_fill_state[i] = "partially_filled"
+                else:
+                    fvg_fill_state[i] = "unfilled"
+
+                if first_touch_index is not None:
+                    duration = first_touch_index - i
+                    fvg_fill_duration_bars[i] = duration
+                    fvg_was_mitigated_flag[i] = True
+                    if duration > cfg.fvg_max_fill_bars:
+                        fvg_quality[i] = 0.0
+                    else:
+                        follow_end = min(n - 1, first_touch_index + int(cfg.displacement_followthrough_bars))
+                        if atr_at_touch is None or atr_at_touch <= eps or touch_price is None:
+                            fvg_quality[i] = 0.0
+                        else:
+                            if direction == "bull":
+                                max_future_high = max(float(val) for val in high[first_touch_index : follow_end + 1])
+                                reaction = max_future_high - float(touch_price)
+                            else:
+                                min_future_low = min(float(val) for val in low[first_touch_index : follow_end + 1])
+                                reaction = float(touch_price) - min_future_low
+                            if reaction < cfg.fvg_min_reaction_atr * atr_at_touch:
+                                fvg_quality[i] = 0.0
+
+            swing_window = max(1, int(cfg.swing_lookback_bars))
+            swing_min_bars = int(cfg.swing_strength_min_bars)
+            trend_window = int(cfg.swing_trend_dir_window)
+            last_swing_high_idx = None
+            last_swing_low_idx = None
+            last_bos_idx = None
+            last_choch_idx = None
+            struct_state_current = "range"
+            swing_points: list[tuple[int, str, float]] = []
+
+            def _trend_from_swings(points: list[tuple[int, str, float]]) -> tuple[str, float]:
+                if len(points) < 2:
+                    return "range", 0.0
+                highs = [p for p in points if p[1] == "high"]
+                lows = [p for p in points if p[1] == "low"]
+                if len(highs) < 2 or len(lows) < 2:
+                    return "range", 0.0
+                high_dirs = [1 if highs[i][2] > highs[i - 1][2] else -1 for i in range(1, len(highs))]
+                low_dirs = [1 if lows[i][2] > lows[i - 1][2] else -1 for i in range(1, len(lows))]
+                high_score = sum(high_dirs)
+                low_score = sum(low_dirs)
+                if high_score > 0 and low_score > 0:
+                    trend = "up"
+                elif high_score < 0 and low_score < 0:
+                    trend = "down"
+                else:
+                    trend = "range"
+
+                xs = [p[0] for p in points]
+                ys = [p[2] for p in points]
+                x_mean = sum(xs) / len(xs)
+                y_mean = sum(ys) / len(ys)
+                cov = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+                var = sum((x - x_mean) ** 2 for x in xs)
+                slope = cov / var if var > eps else 0.0
+                y_var = sum((y - y_mean) ** 2 for y in ys) / len(ys)
+                strength = slope / (y_var**0.5 + eps)
+                return trend, strength
+
+            for i in range(n):
+                if i < swing_window or i + swing_window >= n:
+                    if last_bos_idx is not None:
+                        bos_age_bars[i] = i - last_bos_idx
+                    if last_choch_idx is not None:
+                        choch_age_bars[i] = i - last_choch_idx
+                    struct_state[i] = struct_state_current
+                    continue
+
+                high_slice = high[i - swing_window : i + swing_window + 1]
+                low_slice = low[i - swing_window : i + swing_window + 1]
+                is_swing_high = float(high[i]) == max(high_slice)
+                is_swing_low = float(low[i]) == min(low_slice)
+                if is_swing_high:
+                    if last_swing_low_idx is None or (i - last_swing_low_idx) >= swing_min_bars:
+                        swing_high[i] = float(high[i])
+                        strength = i - last_swing_low_idx if last_swing_low_idx is not None else None
+                        swing_strength[i] = strength
+                        last_swing_high_idx = i
+                        swing_points.append((i, "high", float(high[i])))
+                if is_swing_low:
+                    if last_swing_high_idx is None or (i - last_swing_high_idx) >= swing_min_bars:
+                        swing_low[i] = float(low[i])
+                        strength = i - last_swing_high_idx if last_swing_high_idx is not None else None
+                        swing_strength[i] = strength
+                        last_swing_low_idx = i
+                        swing_points.append((i, "low", float(low[i])))
+
+                window_points = swing_points[-trend_window:] if trend_window > 0 else swing_points
+                trend_dir, trend_strength = _trend_from_swings(window_points)
+                swing_trend_dir[i] = trend_dir
+                struct_trend_strength[i] = trend_strength
+
+                last_high_idx = last_swing_high_idx
+                last_low_idx = last_swing_low_idx
+                if last_high_idx is not None:
+                    bars_since_high = i - last_high_idx
+                    if int(cfg.bos_window_bars_min) <= bars_since_high <= int(cfg.bos_window_bars_max):
+                        bos_level = float(high[last_high_idx])
+                        if float(close[i]) > bos_level + cfg.bos_min_distance_ticks * tick_size:
+                            bos_flag[i] = True
+                            bos_dir[i] = "bullish"
+                            bos_level_px[i] = bos_level
+                            bos_distance_ticks[i] = (float(close[i]) - bos_level) / tick_size if tick_size > eps else 0.0
+                            bos_type[i] = "bos_up"
+                            last_bos_idx = i
+                            if struct_state_current in {"range", "bullish"}:
+                                struct_state_current = "bullish"
+                            else:
+                                struct_state_current = "bullish"
+                if last_low_idx is not None:
+                    bars_since_low = i - last_low_idx
+                    if int(cfg.bos_window_bars_min) <= bars_since_low <= int(cfg.bos_window_bars_max):
+                        bos_level = float(low[last_low_idx])
+                        if float(close[i]) < bos_level - cfg.bos_min_distance_ticks * tick_size:
+                            bos_flag[i] = True
+                            bos_dir[i] = "bearish"
+                            bos_level_px[i] = bos_level
+                            bos_distance_ticks[i] = (bos_level - float(close[i])) / tick_size if tick_size > eps else 0.0
+                            bos_type[i] = "bos_down"
+                            last_bos_idx = i
+                            if struct_state_current in {"range", "bearish"}:
+                                struct_state_current = "bearish"
+                            else:
+                                struct_state_current = "bearish"
+
+                if struct_state_current == "bullish" and last_low_idx is not None:
+                    bos_level = float(low[last_low_idx])
+                    if float(close[i]) < bos_level - cfg.choch_min_distance_ticks * tick_size:
+                        atr_z_val = float(atr_z[i]) if atr_z[i] is not None else 0.0
+                        if atr_z_val >= cfg.choch_z_cut:
+                            choch_flag[i] = True
+                            choch_dir[i] = "bearish"
+                            choch_level_px[i] = bos_level
+                            choch_distance_ticks[i] = (bos_level - float(close[i])) / tick_size if tick_size > eps else 0.0
+                            last_choch_idx = i
+                            struct_state_current = "transition"
+                if struct_state_current == "bearish" and last_high_idx is not None:
+                    bos_level = float(high[last_high_idx])
+                    if float(close[i]) > bos_level + cfg.choch_min_distance_ticks * tick_size:
+                        atr_z_val = float(atr_z[i]) if atr_z[i] is not None else 0.0
+                        if atr_z_val >= cfg.choch_z_cut:
+                            choch_flag[i] = True
+                            choch_dir[i] = "bullish"
+                            choch_level_px[i] = bos_level
+                            choch_distance_ticks[i] = (float(close[i]) - bos_level) / tick_size if tick_size > eps else 0.0
+                            last_choch_idx = i
+                            struct_state_current = "transition"
+
+                if last_bos_idx is not None:
+                    bos_age_bars[i] = i - last_bos_idx
+                if last_choch_idx is not None:
+                    choch_age_bars[i] = i - last_choch_idx
+                struct_state[i] = struct_state_current
+
+            feature_frames.append(
+                grp.with_columns(
+                    pl.Series(name="fvg_direction", values=fvg_direction, dtype=pl.Utf8),
+                    pl.Series(name="fvg_gap_ticks", values=fvg_gap_ticks, dtype=pl.Float64),
+                    pl.Series(name="fvg_upper", values=fvg_upper, dtype=pl.Float64),
+                    pl.Series(name="fvg_lower", values=fvg_lower, dtype=pl.Float64),
+                    pl.Series(name="fvg_mid", values=fvg_mid, dtype=pl.Float64),
+                    pl.Series(name="fvg_origin_ts", values=fvg_origin_ts, dtype=pl.Datetime("us")),
+                    pl.Series(name="fvg_age_bars", values=fvg_age_bars, dtype=pl.Int32),
+                    pl.Series(name="fvg_fill_frac", values=fvg_fill_frac, dtype=pl.Float64),
+                    pl.Series(name="fvg_fill_state", values=fvg_fill_state, dtype=pl.Utf8),
+                    pl.Series(name="fvg_fill_duration_bars", values=fvg_fill_duration_bars, dtype=pl.Int32),
+                    pl.Series(
+                        name="fvg_was_mitigated_flag",
+                        values=fvg_was_mitigated_flag,
+                        dtype=pl.Boolean,
+                    ),
+                    pl.Series(name="fvg_origin_impulse_atr", values=fvg_origin_impulse_atr, dtype=pl.Float64),
+                    pl.Series(name="fvg_origin_body_ratio", values=fvg_origin_body_ratio, dtype=pl.Float64),
+                    pl.Series(name="fvg_quality", values=fvg_quality, dtype=pl.Float64),
+                    pl.Series(name="ob_type", values=ob_type, dtype=pl.Utf8),
+                    pl.Series(name="ob_high", values=ob_high, dtype=pl.Float64),
+                    pl.Series(name="ob_low", values=ob_low, dtype=pl.Float64),
+                    pl.Series(name="ob_mid", values=ob_mid, dtype=pl.Float64),
+                    pl.Series(name="ob_height_ticks", values=ob_height_ticks, dtype=pl.Float64),
+                    pl.Series(name="ob_origin_ts", values=ob_origin_ts, dtype=pl.Datetime("us")),
+                    pl.Series(name="ob_age_bars", values=ob_age_bars, dtype=pl.Int32),
+                    pl.Series(name="ob_distance_ticks", values=ob_distance_ticks, dtype=pl.Float64),
+                    pl.Series(name="ob_freshness_bucket", values=ob_freshness_bucket, dtype=pl.Utf8),
+                    pl.Series(name="ob_quality", values=ob_quality, dtype=pl.Float64),
+                    pl.Series(name="ob_breaker_flag", values=ob_breaker_flag, dtype=pl.Boolean),
+                    pl.Series(name="ob_breaker_dir", values=ob_breaker_dir, dtype=pl.Utf8),
+                    pl.Series(name="ob_breaker_ts", values=ob_breaker_ts, dtype=pl.Datetime("us")),
+                    pl.Series(name="ict_struct_swing_high", values=swing_high, dtype=pl.Float64),
+                    pl.Series(name="ict_struct_swing_low", values=swing_low, dtype=pl.Float64),
+                    pl.Series(name="ict_struct_swing_strength", values=swing_strength, dtype=pl.Float64),
+                    pl.Series(name="ict_struct_swing_trend_dir", values=swing_trend_dir, dtype=pl.Utf8),
+                    pl.Series(name="bos_flag", values=bos_flag, dtype=pl.Boolean),
+                    pl.Series(name="bos_dir", values=bos_dir, dtype=pl.Utf8),
+                    pl.Series(name="bos_level_px", values=bos_level_px, dtype=pl.Float64),
+                    pl.Series(name="bos_distance_ticks", values=bos_distance_ticks, dtype=pl.Float64),
+                    pl.Series(name="bos_age_bars", values=bos_age_bars, dtype=pl.Int32),
+                    pl.Series(name="choch_flag", values=choch_flag, dtype=pl.Boolean),
+                    pl.Series(name="choch_dir", values=choch_dir, dtype=pl.Utf8),
+                    pl.Series(name="choch_level_px", values=choch_level_px, dtype=pl.Float64),
+                    pl.Series(name="choch_distance_ticks", values=choch_distance_ticks, dtype=pl.Float64),
+                    pl.Series(name="choch_age_bars", values=choch_age_bars, dtype=pl.Int32),
+                    pl.Series(name="struct_state", values=struct_state, dtype=pl.Utf8),
+                    pl.Series(name="struct_trend_strength", values=struct_trend_strength, dtype=pl.Float64),
+                    pl.Series(name="bos_type", values=bos_type, dtype=pl.Utf8),
+                )
+            )
+
+        df = pl.concat(feature_frames, how="vertical") if feature_frames else df
+        df = df.with_columns(pl.lit(str(anchor_tf)).alias("fvg_origin_tf"))
+
         out = df.select(
             [
                 pl.col("instrument").cast(pl.Utf8, strict=False),
