@@ -7,6 +7,7 @@ from typing import Optional
 import polars as pl
 
 from engine.core.config_models import load_retail_config
+from engine.core.timegrid import tf_to_truncate_rule
 from engine.data.decisions import write_decisions_for_stage
 from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
@@ -181,21 +182,6 @@ def _log_eval_counts(prefix: str, df: pl.DataFrame) -> None:
 # Enrichment: bring macro blackout from windows into decisions (if available)
 # ---------------------------------------------------------------------------
 
-def _tf_to_truncate_rule(tf: str) -> str:
-    """
-    Map engine TF strings to Polars truncate rules.
-    M1 -> "1m", M5 -> "5m", M15 -> "15m", H1 -> "1h", D1 -> "1d"
-    """
-    tf = (tf or "").strip().upper()
-    if tf.startswith("M") and tf[1:].isdigit():
-        return f"{int(tf[1:])}m"
-    if tf.startswith("H") and tf[1:].isdigit():
-        return f"{int(tf[1:])}h"
-    if tf in ("D1", "1D", "D"):
-        return "1d"
-    raise ValueError(f"pretrade_step: unsupported anchor_tf={tf!r} for truncate rule")
-
-
 def _enrich_decisions_with_windows_macro(decisions: pl.DataFrame, windows: pl.DataFrame | None) -> pl.DataFrame:
     """
     Join macro blackout fields from windows into decisions, if decisions do not already contain them.
@@ -239,7 +225,7 @@ def _enrich_decisions_with_windows_macro(decisions: pl.DataFrame, windows: pl.Da
         # Safe only if one anchor_tf for the batch; otherwise skip truncation.
         uniq = d.select(pl.col("anchor_tf").unique()).to_series().to_list()
         if len(uniq) == 1 and uniq[0]:
-            rule = _tf_to_truncate_rule(str(uniq[0]))
+            rule = tf_to_truncate_rule(str(uniq[0]))
             join_ts = join_ts.dt.truncate(rule)
 
     d = d.with_columns(join_ts.alias("_join_anchor_ts"))
@@ -261,6 +247,36 @@ def _enrich_decisions_with_windows_macro(decisions: pl.DataFrame, windows: pl.Da
 
     out = d.join(w, on=["instrument", "anchor_tf", "_join_anchor_ts"], how="left").drop("_join_anchor_ts")
     return out
+
+
+def _ensure_anchor_fields(decisions: pl.DataFrame) -> pl.DataFrame:
+    if decisions is None or decisions.is_empty():
+        return pl.DataFrame()
+    if "anchor_tf" not in decisions.columns:
+        return decisions
+
+    out = decisions
+
+    if "anchor_ts" in out.columns:
+        out = out.with_columns(pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"))
+    else:
+        ts_sources = [c for c in ["entry_ts", "window_ts", "ts"] if c in out.columns]
+        if not ts_sources:
+            return out
+        out = out.with_columns(
+            pl.coalesce([pl.col(c) for c in ts_sources]).cast(pl.Datetime("us"), strict=False).alias("anchor_ts")
+        )
+
+    frames: list[pl.DataFrame] = []
+    for (anchor_tf,), grp in out.group_by(["anchor_tf"], maintain_order=True):
+        if anchor_tf is None:
+            frames.append(grp)
+            continue
+        rule = tf_to_truncate_rule(str(anchor_tf))
+        frames.append(
+            grp.with_columns(pl.col("anchor_ts").dt.truncate(rule).alias("anchor_ts"))
+        )
+    return pl.concat(frames, how="vertical") if frames else out
 
 
 def _apply_macro_policy(
@@ -419,6 +435,7 @@ def run(state: BatchState) -> BatchState:
         snapshot_id=ctx.snapshot_id,
         run_id=ctx.run_id,
     )
+    decisions = _ensure_anchor_fields(decisions)
     # Ensure macro_is_blackout exists before referencing it (critic decisions may not carry macro columns).
     if "macro_is_blackout" not in decisions.columns:
         decisions = decisions.with_columns(pl.lit(False).cast(pl.Boolean).alias("macro_is_blackout"))
@@ -448,8 +465,6 @@ def run(state: BatchState) -> BatchState:
         )
 
     return state
-
-
 
 
 
