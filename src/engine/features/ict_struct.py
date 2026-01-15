@@ -38,6 +38,14 @@ class IctStructCfg:
 
     # FVG detection and location bucket
     fvg_location_window: int = 20
+    fvg_min_gap_ticks: float = 8.0
+    fvg_max_fill_bars: int = 6
+    fvg_partial_fill_cut: float = 0.5
+    fvg_origin_impulse_range_atr_min: float = 1.0
+    fvg_origin_body_ratio_min: float = 0.55
+    fvg_max_origin_age_bars: int = 200
+    fvg_min_reaction_atr: float = 0.3
+    displacement_followthrough_bars: int = 2
 
 
 def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str, Any] | None) -> IctStructCfg:
@@ -67,6 +75,14 @@ def _cfg_from(family_cfg: Mapping[str, Any] | None, registry_entry: Mapping[str,
         eq_tol_atr_frac=_get_float("eq_tol_atr_frac", 0.10),
         atr_window=_get_int("atr_window", 14),
         fvg_location_window=_get_int("fvg_location_window", 20),
+        fvg_min_gap_ticks=_get_float("fvg_min_gap_ticks", 8.0),
+        fvg_max_fill_bars=_get_int("fvg_max_fill_bars", 6),
+        fvg_partial_fill_cut=_get_float("fvg_partial_fill_cut", 0.5),
+        fvg_origin_impulse_range_atr_min=_get_float("fvg_origin_impulse_range_atr_min", 1.0),
+        fvg_origin_body_ratio_min=_get_float("fvg_origin_body_ratio_min", 0.55),
+        fvg_max_origin_age_bars=_get_int("fvg_max_origin_age_bars", 200),
+        fvg_min_reaction_atr=_get_float("fvg_min_reaction_atr", 0.3),
+        displacement_followthrough_bars=_get_int("displacement_followthrough_bars", 2),
     )
 
 
@@ -145,6 +161,7 @@ def build_feature_frame(
             pl.lit(str(anchor_tf)).alias("anchor_tf"),
             pl.col("ts").cast(pl.Datetime("us"), strict=False).alias("ts"),
         )
+        df = df.with_columns(pl.int_range(0, pl.len()).over("instrument").alias("_bar_index"))
 
         # -----------------------------
         # ATR/TR (dev stub)
@@ -217,37 +234,55 @@ def build_feature_frame(
         bull_gap_px = (pl.col("low") - hi_2).cast(pl.Float64, strict=False)
         bear_gap_px = (lo_2 - pl.col("high")).cast(pl.Float64, strict=False)
 
-        fvg_dir_expr = (
+        fvg_dir_raw = (
             pl.when(bull_gap_px > 0)
             .then(pl.lit("bull"))
             .when(bear_gap_px > 0)
             .then(pl.lit("bear"))
             .otherwise(pl.lit("none"))
-            .alias("fvg_direction")
         )
 
+        fvg_lower_raw = (
+            pl.when(fvg_dir_raw == pl.lit("bull"))
+            .then(hi_2)
+            .when(fvg_dir_raw == pl.lit("bear"))
+            .then(pl.col("high"))
+            .otherwise(pl.lit(None))
+        ).cast(pl.Float64, strict=False)
+
+        fvg_upper_raw = (
+            pl.when(fvg_dir_raw == pl.lit("bull"))
+            .then(pl.col("low"))
+            .when(fvg_dir_raw == pl.lit("bear"))
+            .then(lo_2)
+            .otherwise(pl.lit(None))
+        ).cast(pl.Float64, strict=False)
+
         fvg_gap_px_expr = (
-            pl.when(bull_gap_px > 0)
-            .then(bull_gap_px)
-            .when(bear_gap_px > 0)
-            .then(bear_gap_px)
+            pl.when(fvg_lower_raw.is_not_null() & fvg_upper_raw.is_not_null())
+            .then((fvg_upper_raw - fvg_lower_raw).abs())
             .otherwise(pl.lit(0.0))
             .cast(pl.Float64, strict=False)
         )
 
+        fvg_gap_ticks_expr = safe_div(fvg_gap_px_expr, tick_expr, default=0.0).alias("fvg_gap_ticks")
+
+        fvg_dir_expr = (
+            pl.when(fvg_gap_ticks_expr >= pl.lit(float(cfg.fvg_min_gap_ticks)))
+            .then(fvg_dir_raw)
+            .otherwise(pl.lit("none"))
+            .alias("fvg_direction")
+        )
+
         fvg_gap_ticks_expr = (
-            safe_div(fvg_gap_px_expr, tick_expr, default=0.0)
-            .round(0)
-            .cast(pl.Int32, strict=False)
+            pl.when(fvg_gap_ticks_expr >= pl.lit(float(cfg.fvg_min_gap_ticks)))
+            .then(fvg_gap_ticks_expr)
+            .otherwise(pl.lit(0.0))
+            .cast(pl.Float64, strict=False)
             .alias("fvg_gap_ticks")
         )
 
-        fvg_fill_state_expr = (
-            pl.when((bull_gap_px > 0) | (bear_gap_px > 0))
-            .then(pl.lit("unfilled"))
-            .otherwise(pl.lit("none"))
-            .alias("fvg_fill_state")
-        )
+        fvg_fill_state_expr = pl.lit("none").alias("fvg_fill_state")
 
         mid_expr = ((pl.col("high") + pl.col("low")) / pl.lit(2.0)).cast(pl.Float64, strict=False)
         mid_mean_expr = (
@@ -325,8 +360,6 @@ def build_feature_frame(
             # FVG outputs
             fvg_dir_expr,
             fvg_gap_ticks_expr,
-            pl.lit(str(anchor_tf)).alias("fvg_origin_tf"),
-            pl.col("ts").cast(pl.Datetime("us"), strict=False).alias("fvg_origin_ts"),
             fvg_fill_state_expr,
             fvg_loc_expr,
 
@@ -539,6 +572,14 @@ def build_feature_frame(
                 pl.col("fvg_origin_ts"),
                 pl.col("fvg_fill_state"),
                 pl.col("fvg_location_bucket"),
+                pl.col("fvg_upper"),
+                pl.col("fvg_lower"),
+                pl.col("fvg_mid"),
+                pl.col("fvg_age_bars"),
+                pl.col("fvg_fill_frac"),
+                pl.col("fvg_quality"),
+                pl.col("fvg_origin_impulse_atr"),
+                pl.col("fvg_origin_body_ratio"),
 
                 pl.col("ob_type"),
                 pl.col("ob_high"),
