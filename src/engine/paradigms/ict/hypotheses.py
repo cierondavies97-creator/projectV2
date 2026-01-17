@@ -206,35 +206,11 @@ def _join_windows_with_features(windows: pl.DataFrame, features: pl.DataFrame) -
 
 def _select_candidate_windows(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Downsample candidate windows deterministically.
-
-    Preference:
-      - If anchor_ts exists: keep top-of-hour bars (minute==0) when present.
-      - Otherwise: take every 12th row (e.g., for M5 -> hourly proxy).
+    Return candidate windows without implicit time-based downsampling.
     """
     if df is None or df.is_empty():
         return pl.DataFrame() if df is None else df
-
-    if "anchor_tf" in df.columns:
-        try:
-            anchor_tfs = set(
-                df.select(pl.col("anchor_tf").cast(pl.Utf8, strict=False).unique()).to_series().to_list()
-            )
-            if anchor_tfs.issubset({"S1", "M1"}):
-                return df
-        except Exception:
-            pass
-
-    if "anchor_ts" in df.columns:
-        try:
-            hourly = df.filter(pl.col("anchor_ts").dt.minute() == 0)
-            if not hourly.is_empty():
-                return hourly
-        except Exception:
-            # If anchor_ts isn't a datetime for some reason, fall back.
-            pass
-
-    return df.with_row_index("row_nr").filter(pl.col("row_nr") % 12 == 0).drop("row_nr")
+    return df
 
 
 # -----------------------------------------------------------------------------
