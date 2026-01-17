@@ -426,7 +426,8 @@ def run(state: BatchState) -> BatchState:
 
         if dec_df is not None and not dec_df.is_empty():
             dec_df = _enrich_decisions_anchor(dec_df, tp_df)
-
+            if "decision_ts" in dec_df.columns:
+                dec_df = dec_df.drop("decision_ts")
         decisions_frames.append(dec_df)
         if tp_df is not None and not tp_df.is_empty():
             trade_paths_frames.append(tp_df)
