@@ -81,6 +81,7 @@ class BatchState:
     ctx: RunContext
     key: MicrobatchKey
     tables: dict[str, pl.DataFrame] = field(default_factory=dict)
+    metrics: dict[str, int] = field(default_factory=dict)
 
     def get(self, key: str) -> pl.DataFrame:
         if key not in self.tables:

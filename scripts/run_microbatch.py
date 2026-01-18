@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
 
 import argparse
 import logging
+import os
 from datetime import date
 
 from engine.api import EnvId, MicrobatchKey, Mode, RunContext, run_microbatch
@@ -150,6 +151,7 @@ def main() -> None:
     state = run_microbatch(ctx, key)
 
     # Simple shape summary
+    trade_paths_written_rows = state.metrics.get("trade_paths_written_rows")
     for name in (
         "features",
         "windows",
@@ -163,7 +165,19 @@ def main() -> None:
         "reports",
     ):
         df = state.tables.get(name)
-        n = 0 if df is None else df.height
+        if name == "trade_paths" and trade_paths_written_rows is not None:
+            n = trade_paths_written_rows
+            if os.getenv("REALIGN_ROW_GUARDS") == "1" and df is not None:
+                in_memory_rows = df.height
+                if in_memory_rows != trade_paths_written_rows:
+                    logging.getLogger(__name__).warning(
+                        "trade_paths summary mismatch: printed=%d written=%d (in_memory=%d)",
+                        n,
+                        trade_paths_written_rows,
+                        in_memory_rows,
+                    )
+        else:
+            n = 0 if df is None else df.height
         print(f"{name}: {n} rows")
 
 

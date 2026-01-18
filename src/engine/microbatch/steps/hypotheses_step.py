@@ -445,6 +445,7 @@ def run(state: BatchState) -> BatchState:
 
     state.set("decisions_hypotheses", decisions_hypotheses_df)
     state.set("trade_paths", trade_paths_df)
+    state.metrics["trade_paths_written_rows"] = int(trade_paths_df.height) if trade_paths_df is not None else 0
 
     trading_day: date = state.key.trading_day
 
