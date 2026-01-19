@@ -221,8 +221,13 @@ def _finalize_trade_paths(df: pl.DataFrame) -> pl.DataFrame:
 
     out = _ensure_trade_paths_schema(df)
 
-    if "anchor_ts" not in out.columns and "entry_ts" in out.columns:
-        out = out.with_columns(pl.col("entry_ts").alias("anchor_ts"))
+    if "entry_ts" in out.columns:
+        if "anchor_ts" in out.columns:
+            out = out.with_columns(
+                pl.coalesce([pl.col("anchor_ts"), pl.col("entry_ts")]).alias("anchor_ts")
+            )
+        else:
+            out = out.with_columns(pl.col("entry_ts").alias("anchor_ts"))
 
     if "entry_ts_source" in out.columns:
         out = out.with_columns(
