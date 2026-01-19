@@ -171,6 +171,19 @@ def _resolve_price_sources(
     return defaults_long, defaults_short
 
 
+def _resolve_side_sources(
+    cfg: dict[str, Any],
+    *,
+    defaults: list[str],
+) -> list[str]:
+    params = cfg.get("params") if isinstance(cfg, dict) else {}
+    sources = params.get("side_sources") if isinstance(params, dict) else None
+    if isinstance(sources, list):
+        resolved = [str(x) for x in sources if str(x).strip()]
+        return resolved or defaults
+    return defaults
+
+
 # -----------------------------------------------------------------------------
 # Decisions helpers
 # -----------------------------------------------------------------------------
@@ -364,16 +377,38 @@ def build_ict_hypotheses(
     candidates = df.filter(cond) if cond is not None else df
     selected = _select_candidate_windows(candidates if not candidates.is_empty() else df)
 
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
+    # FIX: use principle_cfg (not cfg) and derive side from signal sources
+    side_sources = _resolve_side_sources(
+        principle_cfg,
+        defaults=["bos_dir", "choch_dir", "ict_struct_swing_trend_dir", "mms_distribution_dir", "liq_sweep_side"],
+    )
+    side_raw = _coalesce_cols(selected, side_sources, dtype=pl.Utf8)
+    side_expr = (
+        pl.when(side_raw.is_in(["long", "short"]))
+        .then(side_raw)
+        .when(side_raw == "up")
+        .then(pl.lit("long"))
+        .when(side_raw == "down")
+        .then(pl.lit("short"))
+        .when(side_raw == "bull")
+        .then(pl.lit("long"))
+        .when(side_raw == "bear")
+        .then(pl.lit("short"))
+        .when(side_raw == "buy")
+        .then(pl.lit("long"))
+        .when(side_raw == "sell")
+        .then(pl.lit("short"))
+        .otherwise(pl.lit("long"))
+    )
 
     entry_sources_long, entry_sources_short = _resolve_price_sources(
-        cfg,
+        principle_cfg,
         key="entry_px_sources",
         defaults_long=["ict_struct_swing_low", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
         defaults_short=["ict_struct_swing_high", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
     )
     exit_sources_long, exit_sources_short = _resolve_price_sources(
-        cfg,
+        principle_cfg,
         key="exit_px_sources",
         defaults_long=["ict_struct_dealing_range_high", "eqh_level_px", "bos_level_px"],
         defaults_short=["ict_struct_dealing_range_low", "eql_level_px", "bos_level_px"],
