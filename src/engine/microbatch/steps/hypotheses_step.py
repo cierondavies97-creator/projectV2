@@ -188,6 +188,72 @@ def _ensure_trade_paths_schema(df: pl.DataFrame) -> pl.DataFrame:
     return out
 
 
+def _safe_truncate_rule(tf: str | None) -> str | None:
+    if tf is None:
+        return None
+    try:
+        return tf_to_truncate_rule(str(tf))
+    except ValueError:
+        return None
+
+
+def _add_alignment_flag(df: pl.DataFrame, *, tf_col: str, flag_col: str) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+    if "entry_ts" not in df.columns or tf_col not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (tf_val,), grp in df.group_by([tf_col], maintain_order=True):
+        rule = _safe_truncate_rule(str(tf_val) if tf_val is not None else None)
+        if rule is None:
+            frames.append(grp.with_columns(pl.lit(None).cast(pl.Boolean).alias(flag_col)))
+            continue
+        entry_ts = pl.col("entry_ts").cast(pl.Datetime("us"), strict=False)
+        aligned = entry_ts.dt.truncate(rule) == entry_ts
+        frames.append(grp.with_columns(aligned.alias(flag_col)))
+    return pl.concat(frames, how="vertical") if frames else df
+
+
+def _finalize_trade_paths(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+
+    out = _ensure_trade_paths_schema(df)
+
+    if "anchor_ts" not in out.columns and "entry_ts" in out.columns:
+        out = out.with_columns(pl.col("entry_ts").alias("anchor_ts"))
+
+    if "entry_ts_source" in out.columns:
+        out = out.with_columns(
+            pl.when(pl.col("entry_ts_source").is_null() | (pl.col("entry_ts_source").cast(pl.Utf8).str.strip_chars() == ""))
+            .then(
+                pl.when(
+                    (pl.col("anchor_ts").is_not_null())
+                    & (pl.col("entry_ts").cast(pl.Datetime("us"), strict=False) == pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False))
+                )
+                .then(pl.lit("anchor_close"))
+                .otherwise(pl.lit("signal_ts"))
+            )
+            .otherwise(pl.col("entry_ts_source"))
+            .alias("entry_ts_source")
+        )
+
+    if "entry_ts_offset_ms" in out.columns:
+        entry_us = pl.col("entry_ts").cast(pl.Datetime("us"), strict=False).cast(pl.Int64)
+        anchor_us = pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).cast(pl.Int64)
+        out = out.with_columns(
+            pl.when(pl.col("entry_ts_offset_ms").is_null() & pl.col("anchor_ts").is_not_null() & pl.col("entry_ts").is_not_null())
+            .then(((entry_us - anchor_us) / 1000).cast(pl.Int64))
+            .otherwise(pl.col("entry_ts_offset_ms"))
+            .alias("entry_ts_offset_ms")
+        )
+
+    out = _add_alignment_flag(out, tf_col="anchor_tf", flag_col="entry_ts_is_aligned_anchor_tf")
+    out = _add_alignment_flag(out, tf_col="tf_entry", flag_col="entry_ts_is_aligned_entry_tf")
+    return out
+
+
 def _ensure_decisions_min_schema(df: pl.DataFrame) -> pl.DataFrame:
     if df is None:
         return pl.DataFrame()
@@ -442,6 +508,7 @@ def run(state: BatchState) -> BatchState:
 
     decisions_hypotheses_df = pl.concat(decisions_frames, how="diagonal") if decisions_frames else pl.DataFrame()
     trade_paths_df = pl.concat(trade_paths_frames, how="diagonal") if trade_paths_frames else pl.DataFrame()
+    trade_paths_df = _finalize_trade_paths(trade_paths_df) if trade_paths_df is not None else pl.DataFrame()
 
     state.set("decisions_hypotheses", decisions_hypotheses_df)
     state.set("trade_paths", trade_paths_df)
