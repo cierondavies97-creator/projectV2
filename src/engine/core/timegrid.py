@@ -19,19 +19,22 @@ def tf_to_truncate_rule(tf: str) -> str:
     Convert engine TF strings into polars truncate rules.
 
     Examples:
+      S1 -> "1s"
       M1 -> "1m"
       M5 -> "5m"
       H1 -> "1h"
       D1 -> "1d"
     """
     tf = (tf or "").strip().upper()
+    if tf.startswith("S"):
+        return f"{int(tf[1:])}s"
     if tf.startswith("M"):
         return f"{int(tf[1:])}m"
     if tf.startswith("H"):
         return f"{int(tf[1:])}h"
     if tf in ("D1", "1D", "D"):
         return "1d"
-    raise ValueError(f"timegrid: unsupported tf={tf!r} (expected M#, H#, D1)")
+    raise ValueError(f"timegrid: unsupported tf={tf!r} (expected S#, M#, H#, D1)")
 
 
 def build_anchor_grid(
