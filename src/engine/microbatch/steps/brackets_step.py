@@ -13,6 +13,49 @@ log = logging.getLogger(__name__)
 # Phase-B evaluation identity (stable join / grouping surface)
 _EVAL_KEYS = ["paradigm_id", "principle_id", "candidate_id", "experiment_id"]
 _SENTINEL = "∅"
+
+
+def _fill_entry_px_from_candles(
+    *,
+    brackets_df: pl.DataFrame,
+    candles_df: pl.DataFrame | None,
+) -> pl.DataFrame:
+    if brackets_df is None or brackets_df.is_empty():
+        return pl.DataFrame() if brackets_df is None else brackets_df
+    if candles_df is None or candles_df.is_empty():
+        return brackets_df
+
+    required = {"instrument", "ts", "open", "close"}
+    if not required.issubset(set(candles_df.columns)):
+        return brackets_df
+
+    c = (
+        candles_df.select(
+            pl.col("instrument").cast(pl.Utf8, strict=False),
+            pl.col("ts").cast(pl.Datetime("us"), strict=False),
+            pl.col("open").cast(pl.Float64, strict=False),
+            pl.col("close").cast(pl.Float64, strict=False),
+        )
+        .drop_nulls(["instrument", "ts"])
+        .sort(["instrument", "ts"])
+        .unique(subset=["instrument", "ts"], keep="last")
+    )
+
+    rows: list[dict] = []
+    for row in brackets_df.to_dicts():
+        entry_px = row.get("entry_px")
+        entry_ts = row.get("entry_ts")
+        instrument = row.get("instrument")
+        if entry_px is None and entry_ts is not None and instrument is not None:
+            sub = c.filter((pl.col("instrument") == instrument) & (pl.col("ts") >= pl.lit(entry_ts)))
+            if not sub.is_empty():
+                first = sub.head(1).to_dicts()[0]
+                entry_px = first.get("open", first.get("close"))
+        if entry_px is not None:
+            row["entry_px"] = entry_px
+        rows.append(row)
+
+    return pl.DataFrame(rows) if rows else brackets_df
 def _maybe_col(
     df: pl.DataFrame,
     name: str,
@@ -189,6 +232,8 @@ def run(state: BatchState) -> BatchState:
         trade_paths=trade_paths,
     )
 
+    candles = state.get_optional("candles")
+    brackets_df = _fill_entry_px_from_candles(brackets_df=brackets_df, candles_df=candles)
     state.set("brackets", brackets_df)
 
     # Persist per-instrument; writer will further split by evaluation identity when present

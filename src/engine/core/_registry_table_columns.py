@@ -307,9 +307,14 @@ REGISTRY_TABLE_COLUMNS: Dict[str, Dict[str, str]] = {
         'time_to_2R_bars': 'int',
         'trade_id': 'string',
     },
-    'data/windows': {
+'data/windows': {
         'anchor_tf': 'string',
         'anchor_ts': 'timestamp',
+        'consolidation_flag': 'boolean',
+        'consolidation_method': 'string',
+        'consolidation_range_pct': 'double',
+        'consolidation_score': 'double',
+        'consolidation_vol_z': 'double',
         'carry_ts_carry_score': 'double',
         'carry_ts_confidence': 'double',
         'carry_ts_data_age_bars': 'int',

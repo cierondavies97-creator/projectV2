@@ -145,6 +145,32 @@ def _add_entry_alignment_flag(
     return pl.concat(frames, how="vertical") if frames else df
 
 
+def _coalesce_cols(df: pl.DataFrame, cols: list[str], *, dtype: pl.DataType) -> pl.Expr:
+    existing = [pl.col(c).cast(dtype, strict=False) for c in cols if c in df.columns]
+    if not existing:
+        return pl.lit(None).cast(dtype)
+    return pl.coalesce(existing)
+
+
+def _resolve_price_sources(
+    cfg: dict[str, Any],
+    *,
+    key: str,
+    defaults_long: list[str],
+    defaults_short: list[str],
+) -> tuple[list[str], list[str]]:
+    params = cfg.get("params") if isinstance(cfg, dict) else {}
+    sources = params.get(key) if isinstance(params, dict) else None
+    if isinstance(sources, dict):
+        long_list = [str(x) for x in sources.get("long", []) if str(x).strip()]
+        short_list = [str(x) for x in sources.get("short", []) if str(x).strip()]
+        return (long_list or defaults_long), (short_list or defaults_short)
+    if isinstance(sources, list):
+        flat = [str(x) for x in sources if str(x).strip()]
+        return (flat or defaults_long), (flat or defaults_short)
+    return defaults_long, defaults_short
+
+
 # -----------------------------------------------------------------------------
 # Decisions helpers
 # -----------------------------------------------------------------------------
@@ -310,6 +336,31 @@ def build_ict_hypotheses(
 
     candidates = df.filter(cond) if cond is not None else df
     selected = _select_candidate_windows(candidates if not candidates.is_empty() else df)
+
+    entry_sources_long, entry_sources_short = _resolve_price_sources(
+        cfg,
+        key="entry_px_sources",
+        defaults_long=["ict_struct_swing_low", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
+        defaults_short=["ict_struct_swing_high", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
+    )
+    exit_sources_long, exit_sources_short = _resolve_price_sources(
+        cfg,
+        key="exit_px_sources",
+        defaults_long=["ict_struct_dealing_range_high", "eqh_level_px", "bos_level_px"],
+        defaults_short=["ict_struct_dealing_range_low", "eql_level_px", "bos_level_px"],
+    )
+
+    entry_px_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(
+        _coalesce_cols(selected, entry_sources_long, dtype=pl.Float64)
+    ).otherwise(
+        _coalesce_cols(selected, entry_sources_short, dtype=pl.Float64)
+    )
+
+    exit_px_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(
+        _coalesce_cols(selected, exit_sources_long, dtype=pl.Float64)
+    ).otherwise(
+        _coalesce_cols(selected, exit_sources_short, dtype=pl.Float64)
+    )
     if selected.is_empty():
         return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
 
@@ -395,7 +446,8 @@ def build_ict_hypotheses(
             pl.lit(None).cast(pl.Int64).alias("entry_ts_offset_ms"),
             pl.lit(True).cast(pl.Boolean).alias("entry_ts_is_aligned_anchor_tf"),
             pl.lit(None).cast(pl.Boolean).alias("entry_ts_is_aligned_entry_tf"),
-            pl.lit(None).cast(pl.Float64).alias("entry_px"),
+            entry_px_expr.alias("entry_px"),
+            exit_px_expr.alias("exit_px"),
             pl.lit("candidate").cast(pl.Utf8).alias("principle_status_at_entry"),
             pl.lit("phaseA_auto").cast(pl.Utf8).alias("entry_mode"),
         ]

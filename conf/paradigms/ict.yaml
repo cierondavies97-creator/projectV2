@@ -10,6 +10,7 @@ feature_families:
   - "vol_range"
   - "stat_ts"
   - "macro_calendar"
+  - "consolidation_bar"
 
 critic:
   impl: "ict_basic"
