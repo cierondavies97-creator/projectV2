@@ -641,8 +641,8 @@ stat_ts:
 
 vol_range:
   table: "data/windows"
-  enabled: false
-  maturity: "stub"
+  enabled: true
+  maturity: "experimental"
   description: "Volatility/range compression-expansion regime features (range/width z, percentile, streak/age, state machine, and regime id/confidence)."
   primary_key: [instrument, anchor_tf, anchor_ts]
 
@@ -1212,6 +1212,30 @@ ta_memory:
 # ------------------------------------------------------------------------
 # Microstructure PCR/A (per instrument, anchor_tf, anchor_ts)
 # ------------------------------------------------------------------------
+consolidation_bar:
+  table: "data/windows"
+  enabled: true
+  maturity: "experimental"
+  description: "Consolidation regime proxy using rolling range compression and volatility z-score."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - lookback_bars
+    - vol_z_window_bars
+    - range_pct_max
+    - vol_z_abs_max
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf: { role: key, dtype: string }
+    anchor_ts: { role: key, dtype: timestamp }
+
+    consolidation_flag: { role: feature, dtype: boolean }
+    consolidation_score: { role: feature, dtype: double }
+    consolidation_range_pct: { role: feature, dtype: double }
+    consolidation_vol_z: { role: feature, dtype: double }
+    consolidation_method: { role: feature, dtype: string }
+
 pcra_bar:
   table: "data/pcr_a"
   enabled: true

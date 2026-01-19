@@ -7,6 +7,7 @@ import polars as pl
 
 from engine.config.features_auto import get_threshold_float, load_features_auto
 from engine.core.schema import TRADE_PATHS_SCHEMA
+from engine.core.timegrid import tf_to_truncate_rule
 from engine.paradigms.registry import register_hypotheses_builder
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,87 @@ def _ensure_trade_paths_schema(df: pl.DataFrame) -> pl.DataFrame:
         out = out.with_columns(cast_exprs)
 
     return out
+
+
+def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame() if df is None else df
+    if "anchor_tf" not in df.columns or "anchor_ts" not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (anchor_tf,), grp in df.group_by(["anchor_tf"], maintain_order=True):
+        if anchor_tf is None:
+            frames.append(grp)
+            continue
+        rule = tf_to_truncate_rule(str(anchor_tf))
+        frames.append(
+            grp.with_columns(
+                pl.col("anchor_ts")
+                .cast(pl.Datetime("us"), strict=False)
+                .dt.truncate(rule)
+                .alias("anchor_ts")
+            )
+        )
+    return pl.concat(frames, how="vertical") if frames else df
+
+
+def _safe_truncate_rule(tf: str | None) -> str | None:
+    if tf is None:
+        return None
+    try:
+        return tf_to_truncate_rule(str(tf))
+    except ValueError:
+        return None
+
+
+def _add_entry_alignment_flag(
+    df: pl.DataFrame,
+    *,
+    tf_col: str,
+    flag_col: str,
+) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame() if df is None else df
+    if "entry_ts" not in df.columns or tf_col not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (tf_val,), grp in df.group_by([tf_col], maintain_order=True):
+        rule = _safe_truncate_rule(str(tf_val) if tf_val is not None else None)
+        if rule is None:
+            frames.append(grp.with_columns(pl.lit(None).cast(pl.Boolean).alias(flag_col)))
+            continue
+        entry_ts = pl.col("entry_ts").cast(pl.Datetime("us"), strict=False)
+        aligned = entry_ts.dt.truncate(rule) == entry_ts
+        frames.append(grp.with_columns(aligned.alias(flag_col)))
+    return pl.concat(frames, how="vertical") if frames else df
+
+
+def _coalesce_cols(df: pl.DataFrame, cols: list[str], *, dtype: pl.DataType) -> pl.Expr:
+    existing = [pl.col(c).cast(dtype, strict=False) for c in cols if c in df.columns]
+    if not existing:
+        return pl.lit(None).cast(dtype)
+    return pl.coalesce(existing)
+
+
+def _resolve_price_sources(
+    cfg: dict[str, Any],
+    *,
+    key: str,
+    defaults_long: list[str],
+    defaults_short: list[str],
+) -> tuple[list[str], list[str]]:
+    params = cfg.get("params") if isinstance(cfg, dict) else {}
+    sources = params.get(key) if isinstance(params, dict) else None
+    if isinstance(sources, dict):
+        long_list = [str(x) for x in sources.get("long", []) if str(x).strip()]
+        short_list = [str(x) for x in sources.get("short", []) if str(x).strip()]
+        return (long_list or defaults_long), (short_list or defaults_short)
+    if isinstance(sources, list):
+        flat = [str(x) for x in sources if str(x).strip()]
+        return (flat or defaults_long), (flat or defaults_short)
+    return defaults_long, defaults_short
 
 
 # -----------------------------------------------------------------------------
@@ -182,25 +264,11 @@ def _join_windows_with_features(windows: pl.DataFrame, features: pl.DataFrame) -
 
 def _select_candidate_windows_for_group(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Downsample candidate windows deterministically.
-
-    Preference:
-      - If anchor_ts exists: keep top-of-hour bars (minute==0) when present.
-      - Otherwise: take every 12th row (e.g., for M5 -> hourly proxy).
+    Return candidate windows without implicit time-based downsampling.
     """
     if df is None or df.is_empty():
         return pl.DataFrame() if df is None else df
-
-    if "anchor_ts" in df.columns:
-        try:
-            hourly = df.filter(pl.col("anchor_ts").dt.minute() == 0)
-            if not hourly.is_empty():
-                return hourly
-        except Exception:
-            # If anchor_ts isn't a datetime for some reason, fall back.
-            pass
-
-    return df.with_row_index("row_nr").filter(pl.col("row_nr") % 12 == 0).drop("row_nr")
+    return df
 
 
 def _select_candidate_windows(df: pl.DataFrame) -> pl.DataFrame:
@@ -242,6 +310,8 @@ def build_ict_hypotheses(
 ) -> HypoOut:
     paradigm_id = str(principle_cfg.get("paradigm_id", "ict"))
     principle_id = str(principle_cfg.get("principle_id", "ict_all_windows"))
+    hypotheses_cfg = principle_cfg.get("hypotheses", {}) if isinstance(principle_cfg, dict) else {}
+    tf_entry_allowlist = hypotheses_cfg.get("tf_entry_allowlist", []) if isinstance(hypotheses_cfg, dict) else []
 
     if windows is None or windows.is_empty():
         return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
@@ -253,6 +323,13 @@ def build_ict_hypotheses(
             return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
 
     df = windows.sort(["instrument", "anchor_tf", "anchor_ts"])
+    if tf_entry_allowlist:
+        tf_entries = [str(tf) for tf in tf_entry_allowlist if str(tf).strip()]
+        if tf_entries:
+            df = df.filter(pl.col("tf_entry").cast(pl.Utf8, strict=False).is_in(tf_entries))
+            if df.is_empty():
+                log.info("ict.hypotheses: tf_entry_allowlist=%s filtered all windows", tf_entries)
+                return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
     df = _join_windows_with_features(df, features)
 
     # Threshold (safe default)
@@ -286,6 +363,33 @@ def build_ict_hypotheses(
 
     candidates = df.filter(cond) if cond is not None else df
     selected = _select_candidate_windows(candidates if not candidates.is_empty() else df)
+
+    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
+
+    entry_sources_long, entry_sources_short = _resolve_price_sources(
+        cfg,
+        key="entry_px_sources",
+        defaults_long=["ict_struct_swing_low", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
+        defaults_short=["ict_struct_swing_high", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
+    )
+    exit_sources_long, exit_sources_short = _resolve_price_sources(
+        cfg,
+        key="exit_px_sources",
+        defaults_long=["ict_struct_dealing_range_high", "eqh_level_px", "bos_level_px"],
+        defaults_short=["ict_struct_dealing_range_low", "eql_level_px", "bos_level_px"],
+    )
+
+    entry_px_expr = pl.when(side_expr == pl.lit("long")).then(
+        _coalesce_cols(selected, entry_sources_long, dtype=pl.Float64)
+    ).otherwise(
+        _coalesce_cols(selected, entry_sources_short, dtype=pl.Float64)
+    )
+
+    exit_px_expr = pl.when(side_expr == pl.lit("long")).then(
+        _coalesce_cols(selected, exit_sources_long, dtype=pl.Float64)
+    ).otherwise(
+        _coalesce_cols(selected, exit_sources_short, dtype=pl.Float64)
+    )
     if selected.is_empty():
         return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
 
@@ -293,8 +397,8 @@ def build_ict_hypotheses(
     run_id = str(getattr(ctx, "run_id", "") or "")
     mode = str(getattr(ctx, "mode", "") or "")
 
-    # Ensure anchor_ts is datetime for deterministic formatting
-    selected = selected.with_columns(pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"))
+    # Ensure anchor_ts is datetime and on-grid for deterministic formatting
+    selected = _truncate_anchor_ts_by_tf(selected)
 
     # trade_id = "{run_id}-{instrument}-{anchor_tf}-{YYYYMMDDTHHMMSS}"
     selected = selected.with_columns(
@@ -318,8 +422,6 @@ def build_ict_hypotheses(
         if "macro_blackout_max_impact" in selected.columns
         else pl.lit(None).cast(pl.Int64)
     )
-
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
 
     # Decisions frame (stage writer will add dt later; keep minimal here)
     decisions_df = selected.select(
@@ -347,8 +449,6 @@ def build_ict_hypotheses(
     else:
         dt_expr = pl.col("anchor_ts").dt.date().cast(pl.Date, strict=False)
 
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
-
     tp_df = selected.select(
         [
             pl.lit(snapshot_id).cast(pl.Utf8).alias("snapshot_id"),
@@ -365,13 +465,24 @@ def build_ict_hypotheses(
             side_expr.cast(pl.Utf8).alias("side"),
             pl.col("anchor_tf").cast(pl.Utf8, strict=False).alias("anchor_tf"),
             pl.col("tf_entry").cast(pl.Utf8, strict=False).alias("tf_entry"),
+            pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"),
             pl.col("anchor_ts").alias("entry_ts"),
-            pl.lit(None).cast(pl.Float64).alias("entry_px"),
+            pl.lit("anchor_close").cast(pl.Utf8).alias("entry_ts_source"),
+            pl.lit(None).cast(pl.Int64).alias("entry_ts_offset_ms"),
+            pl.lit(True).cast(pl.Boolean).alias("entry_ts_is_aligned_anchor_tf"),
+            pl.lit(None).cast(pl.Boolean).alias("entry_ts_is_aligned_entry_tf"),
+            entry_px_expr.alias("entry_px"),
+            exit_px_expr.alias("exit_px"),
             pl.lit("candidate").cast(pl.Utf8).alias("principle_status_at_entry"),
             pl.lit("phaseA_auto").cast(pl.Utf8).alias("entry_mode"),
         ]
     )
 
+    tp_df = _add_entry_alignment_flag(
+        tp_df,
+        tf_col="tf_entry",
+        flag_col="entry_ts_is_aligned_entry_tf",
+    )
     tp_df = _ensure_trade_paths_schema(tp_df)
 
     log.info("ict.hypotheses: produced decisions=%d trade_paths=%d", decisions_df.height, tp_df.height)

@@ -8,6 +8,7 @@ import polars as pl
 
 from engine.core.ids import RunContext
 from engine.core.schema import enforce_table
+from engine.core.timegrid import tf_to_truncate_rule
 from engine.io.parquet_io import read_parquet_dir, write_parquet
 from engine.io.paths import decisions_dir
 
@@ -106,6 +107,43 @@ def _validate_decisions_frame(stage: DecisionStage, df: pl.DataFrame) -> None:
         raise ValueError("decisions frame has paradigm_id but is missing principle_id (Phase B requires both).")
 
 
+def _normalize_anchor_ts(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+    if "anchor_tf" not in df.columns or "anchor_ts" not in df.columns:
+        return df
+
+    out = df.with_columns(
+        pl.col("anchor_tf").cast(pl.Utf8, strict=False).alias("anchor_tf"),
+        pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"),
+    )
+
+    frames: list[pl.DataFrame] = []
+    for (anchor_tf,), grp in out.group_by(["anchor_tf"], maintain_order=True):
+        if anchor_tf is None:
+            frames.append(grp)
+            continue
+        rule = tf_to_truncate_rule(str(anchor_tf))
+        frames.append(grp.with_columns(pl.col("anchor_ts").dt.truncate(rule).alias("anchor_ts")))
+    return pl.concat(frames, how="vertical") if frames else out
+
+
+def _ensure_decision_ts(df: pl.DataFrame) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame()
+    if "decision_ts" in df.columns:
+        return df
+
+    sources: list[pl.Expr] = []
+    for col in ("entry_ts", "window_ts", "ts", "anchor_ts"):
+        if col in df.columns:
+            sources.append(pl.col(col))
+    if not sources:
+        return df
+
+    return df.with_columns(pl.coalesce(sources).cast(pl.Datetime("us"), strict=False).alias("decision_ts"))
+
+
 def write_decisions_for_stage(
     ctx: RunContext,
     trading_day: date,
@@ -123,6 +161,8 @@ def write_decisions_for_stage(
     if "stage" not in df.columns:
         df = df.with_columns(pl.lit(stage).cast(pl.Utf8).alias("stage"))
 
+    df = _ensure_decision_ts(df)
+    df = _normalize_anchor_ts(df)
     _validate_decisions_frame(stage, df)
 
     eval_mode = _is_eval_mode(df)
