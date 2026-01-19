@@ -29,16 +29,18 @@ def _fill_entry_px_from_candles(
     if not required.issubset(set(candles_df.columns)):
         return brackets_df
 
+    has_tf = "tf" in candles_df.columns
     c = (
         candles_df.select(
             pl.col("instrument").cast(pl.Utf8, strict=False),
+            pl.col("tf").cast(pl.Utf8, strict=False) if has_tf else pl.lit(None).cast(pl.Utf8).alias("tf"),
             pl.col("ts").cast(pl.Datetime("us"), strict=False),
             pl.col("open").cast(pl.Float64, strict=False),
             pl.col("close").cast(pl.Float64, strict=False),
         )
         .drop_nulls(["instrument", "ts"])
         .sort(["instrument", "ts"])
-        .unique(subset=["instrument", "ts"], keep="last")
+        .unique(subset=["instrument", "tf", "ts"], keep="last")
     )
 
     rows: list[dict] = []
@@ -46,8 +48,11 @@ def _fill_entry_px_from_candles(
         entry_px = row.get("entry_px")
         entry_ts = row.get("entry_ts")
         instrument = row.get("instrument")
+        tf_entry = row.get("tf_entry")
         if entry_px is None and entry_ts is not None and instrument is not None:
             sub = c.filter((pl.col("instrument") == instrument) & (pl.col("ts") >= pl.lit(entry_ts)))
+            if tf_entry is not None:
+                sub = sub.filter(pl.col("tf") == pl.lit(tf_entry))
             if not sub.is_empty():
                 first = sub.head(1).to_dicts()[0]
                 entry_px = first.get("open", first.get("close"))
@@ -172,6 +177,7 @@ def _run_brackets(
         _maybe_col(src_norm, "trade_id", dtype=pl.Utf8, default=None).alias("trade_id"),
         _maybe_col(src_norm, "instrument", dtype=pl.Utf8, default=None).alias("instrument"),
         _maybe_col(src_norm, "side", dtype=pl.Utf8, default=None).alias("side"),
+        _maybe_col(src_norm, "tf_entry", dtype=pl.Utf8, default=None).alias("tf_entry"),
 
         # Required by fills_step:
         _as_ts(src_norm, "entry_ts").alias("entry_ts"),

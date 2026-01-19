@@ -337,6 +337,8 @@ def build_ict_hypotheses(
     candidates = df.filter(cond) if cond is not None else df
     selected = _select_candidate_windows(candidates if not candidates.is_empty() else df)
 
+    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
+
     entry_sources_long, entry_sources_short = _resolve_price_sources(
         cfg,
         key="entry_px_sources",
@@ -350,13 +352,13 @@ def build_ict_hypotheses(
         defaults_short=["ict_struct_dealing_range_low", "eql_level_px", "bos_level_px"],
     )
 
-    entry_px_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(
+    entry_px_expr = pl.when(side_expr == pl.lit("long")).then(
         _coalesce_cols(selected, entry_sources_long, dtype=pl.Float64)
     ).otherwise(
         _coalesce_cols(selected, entry_sources_short, dtype=pl.Float64)
     )
 
-    exit_px_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(
+    exit_px_expr = pl.when(side_expr == pl.lit("long")).then(
         _coalesce_cols(selected, exit_sources_long, dtype=pl.Float64)
     ).otherwise(
         _coalesce_cols(selected, exit_sources_short, dtype=pl.Float64)
@@ -394,8 +396,6 @@ def build_ict_hypotheses(
         else pl.lit(None).cast(pl.Int64)
     )
 
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
-
     # Decisions frame (stage writer will add dt later; keep minimal here)
     decisions_df = selected.select(
         [
@@ -421,8 +421,6 @@ def build_ict_hypotheses(
         dt_expr = pl.col("dt").cast(pl.Date, strict=False)
     else:
         dt_expr = pl.col("anchor_ts").dt.date().cast(pl.Date, strict=False)
-
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
 
     tp_df = selected.select(
         [
