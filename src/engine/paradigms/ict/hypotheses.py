@@ -113,6 +113,29 @@ def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(frames, how="vertical") if frames else df
 
 
+def _add_entry_alignment_flag(
+    df: pl.DataFrame,
+    *,
+    tf_col: str,
+    flag_col: str,
+) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame() if df is None else df
+    if "entry_ts" not in df.columns or tf_col not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (tf_val,), grp in df.group_by([tf_col], maintain_order=True):
+        if tf_val is None:
+            frames.append(grp.with_columns(pl.lit(False).alias(flag_col)))
+            continue
+        rule = tf_to_truncate_rule(str(tf_val))
+        entry_ts = pl.col("entry_ts").cast(pl.Datetime("us"), strict=False)
+        aligned = entry_ts.dt.truncate(rule) == entry_ts
+        frames.append(grp.with_columns(aligned.alias(flag_col)))
+    return pl.concat(frames, how="vertical") if frames else df
+
+
 # -----------------------------------------------------------------------------
 # Decisions helpers
 # -----------------------------------------------------------------------------
@@ -357,13 +380,23 @@ def build_ict_hypotheses(
             side_expr.cast(pl.Utf8).alias("side"),
             pl.col("anchor_tf").cast(pl.Utf8, strict=False).alias("anchor_tf"),
             pl.col("tf_entry").cast(pl.Utf8, strict=False).alias("tf_entry"),
+            pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"),
             pl.col("anchor_ts").alias("entry_ts"),
+            pl.lit("anchor_close").cast(pl.Utf8).alias("entry_ts_source"),
+            pl.lit(None).cast(pl.Int64).alias("entry_ts_offset_ms"),
+            pl.lit(True).cast(pl.Boolean).alias("entry_ts_is_aligned_anchor_tf"),
+            pl.lit(None).cast(pl.Boolean).alias("entry_ts_is_aligned_entry_tf"),
             pl.lit(None).cast(pl.Float64).alias("entry_px"),
             pl.lit("candidate").cast(pl.Utf8).alias("principle_status_at_entry"),
             pl.lit("phaseA_auto").cast(pl.Utf8).alias("entry_mode"),
         ]
     )
 
+    tp_df = _add_entry_alignment_flag(
+        tp_df,
+        tf_col="tf_entry",
+        flag_col="entry_ts_is_aligned_entry_tf",
+    )
     tp_df = _ensure_trade_paths_schema(tp_df)
 
     log.info("ict.hypotheses: produced decisions=%d trade_paths=%d", decisions_df.height, tp_df.height)

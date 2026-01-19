@@ -209,10 +209,13 @@ def _enrich_decisions_with_windows_macro(decisions: pl.DataFrame, windows: pl.Da
     if ("instrument" not in decisions.columns) or ("anchor_tf" not in decisions.columns):
         return decisions
 
-    ts_candidates = ["anchor_ts", "window_ts", "ts", "entry_ts"]
-    ts_col = next((c for c in ts_candidates if c in decisions.columns), None)
-    if ts_col is None:
-        return decisions
+    if "anchor_ts" in decisions.columns:
+        ts_col = "anchor_ts"
+    else:
+        ts_candidates = ["window_ts", "ts", "entry_ts"]
+        ts_col = next((c for c in ts_candidates if c in decisions.columns), None)
+        if ts_col is None:
+            return decisions
 
     d = decisions.with_columns(
         pl.col("instrument").cast(pl.Utf8, strict=False),
@@ -465,7 +468,6 @@ def run(state: BatchState) -> BatchState:
         )
 
     return state
-
 
 
 
