@@ -225,6 +225,8 @@ def build_ict_hypotheses(
 ) -> HypoOut:
     paradigm_id = str(principle_cfg.get("paradigm_id", "ict"))
     principle_id = str(principle_cfg.get("principle_id", "ict_all_windows"))
+    hypotheses_cfg = principle_cfg.get("hypotheses", {}) if isinstance(principle_cfg, dict) else {}
+    tf_entry_allowlist = hypotheses_cfg.get("tf_entry_allowlist", []) if isinstance(hypotheses_cfg, dict) else []
 
     if windows is None or windows.is_empty():
         return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
@@ -236,6 +238,13 @@ def build_ict_hypotheses(
             return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
 
     df = windows.sort(["instrument", "anchor_tf", "anchor_ts"])
+    if tf_entry_allowlist:
+        tf_entries = [str(tf) for tf in tf_entry_allowlist if str(tf).strip()]
+        if tf_entries:
+            df = df.filter(pl.col("tf_entry").cast(pl.Utf8, strict=False).is_in(tf_entries))
+            if df.is_empty():
+                log.info("ict.hypotheses: tf_entry_allowlist=%s filtered all windows", tf_entries)
+                return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
     df = _join_windows_with_features(df, features)
 
     # Threshold (safe default)

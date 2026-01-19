@@ -6,6 +6,8 @@ default_principle_id: "ict_all_windows"
 
 feature_families:
   - "ict_struct"
+  - "ta_vol"
+  - "vol_range"
   - "stat_ts"
   - "macro_calendar"
 

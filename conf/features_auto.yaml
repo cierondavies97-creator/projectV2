@@ -69,3 +69,544 @@ paradigms:
               kind: ordinal
               role: compliance_context
               thresholds: {}
+
+  ict:
+    tables:
+      "data/features":
+        families:
+
+          ict_struct:
+            fvg_direction:
+              enabled: true
+              thresholds: {}
+
+            fvg_gap_ticks:
+              enabled: true
+              thresholds: {}
+
+            fvg_origin_tf:
+              enabled: true
+              thresholds: {}
+
+            fvg_origin_ts:
+              enabled: true
+              thresholds: {}
+
+            fvg_fill_state:
+              enabled: true
+              thresholds: {}
+
+            fvg_location_bucket:
+              enabled: true
+              thresholds: {}
+
+            fvg_upper:
+              enabled: true
+              thresholds: {}
+
+            fvg_lower:
+              enabled: true
+              thresholds: {}
+
+            fvg_mid:
+              enabled: true
+              thresholds: {}
+
+            fvg_age_bars:
+              enabled: true
+              thresholds: {}
+
+            fvg_fill_frac:
+              enabled: true
+              thresholds: {}
+
+            fvg_quality:
+              enabled: true
+              thresholds: {}
+
+            fvg_origin_impulse_atr:
+              enabled: true
+              thresholds: {}
+
+            fvg_origin_body_ratio:
+              enabled: true
+              thresholds: {}
+
+            ob_type:
+              enabled: true
+              thresholds: {}
+
+            ob_high:
+              enabled: true
+              thresholds: {}
+
+            ob_low:
+              enabled: true
+              thresholds: {}
+
+            ob_origin_ts:
+              enabled: true
+              thresholds: {}
+
+            ob_freshness_bucket:
+              enabled: true
+              thresholds: {}
+
+            ob_mid:
+              enabled: true
+              thresholds: {}
+
+            ob_height_ticks:
+              enabled: true
+              thresholds: {}
+
+            ob_age_bars:
+              enabled: true
+              thresholds: {}
+
+            ob_distance_ticks:
+              enabled: true
+              thresholds: {}
+
+            ob_quality:
+              enabled: true
+              thresholds: {}
+
+            ob_breaker_flag:
+              enabled: true
+              thresholds: {}
+
+            ob_breaker_dir:
+              enabled: true
+              thresholds: {}
+
+            ob_breaker_ts:
+              enabled: true
+              thresholds: {}
+
+            eqh_flag:
+              enabled: true
+              thresholds: {}
+
+            eql_flag:
+              enabled: true
+              thresholds: {}
+
+            liq_grab_flag:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_liquidity_tag:
+              enabled: true
+              thresholds: {}
+
+            eqh_level_px:
+              enabled: true
+              thresholds: {}
+
+            eql_level_px:
+              enabled: true
+              thresholds: {}
+
+            eq_level_hit_count:
+              enabled: true
+              thresholds: {}
+
+            eq_level_span_bars:
+              enabled: true
+              thresholds: {}
+
+            liq_sweep_flag:
+              enabled: true
+              thresholds: {}
+
+            liq_sweep_side:
+              enabled: true
+              thresholds: {}
+
+            liq_sweep_level_px:
+              enabled: true
+              thresholds: {}
+
+            liq_sweep_depth_ticks:
+              enabled: true
+              thresholds: {}
+
+            liq_sweep_reclaim_bars:
+              enabled: true
+              thresholds: {}
+
+            liq_sweep_quality:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_swing_high:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_swing_low:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_pd_index:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_swing_strength:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_swing_trend_dir:
+              enabled: true
+              thresholds: {}
+
+            bos_flag:
+              enabled: true
+              thresholds: {}
+
+            bos_dir:
+              enabled: true
+              thresholds: {}
+
+            bos_level_px:
+              enabled: true
+              thresholds: {}
+
+            bos_distance_ticks:
+              enabled: true
+              thresholds: {}
+
+            bos_age_bars:
+              enabled: true
+              thresholds: {}
+
+            choch_flag:
+              enabled: true
+              thresholds: {}
+
+            choch_dir:
+              enabled: true
+              thresholds: {}
+
+            choch_level_px:
+              enabled: true
+              thresholds: {}
+
+            choch_distance_ticks:
+              enabled: true
+              thresholds: {}
+
+            choch_age_bars:
+              enabled: true
+              thresholds: {}
+
+            struct_state:
+              enabled: true
+              thresholds: {}
+
+            struct_trend_strength:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_dealing_range_high:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_dealing_range_low:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_dealing_range_mid:
+              enabled: true
+              thresholds: {}
+
+            pd_location_frac:
+              enabled: true
+              thresholds: {}
+
+            pd_location_bucket:
+              enabled: true
+              thresholds: {}
+
+            dealing_range_age_bars:
+              enabled: true
+              thresholds: {}
+
+            fvg_fill_duration_bars:
+              enabled: true
+              thresholds: {}
+
+            fvg_was_mitigated_flag:
+              enabled: true
+              thresholds: {}
+
+            bos_type:
+              enabled: true
+              thresholds: {}
+
+            ict_struct_context_tag:
+              enabled: true
+              thresholds: {}
+
+            displacement_flag:
+              enabled: true
+              thresholds: {}
+
+            displacement_dir:
+              enabled: true
+              thresholds: {}
+
+            displacement_range_atr:
+              enabled: true
+              thresholds: {}
+
+            displacement_body_ratio:
+              enabled: true
+              thresholds: {}
+
+            displacement_close_loc:
+              enabled: true
+              thresholds: {}
+
+            displacement_quality:
+              enabled: true
+              thresholds: {}
+
+            atr_anchor:
+              enabled: true
+              thresholds: {}
+
+            atr_z:
+              enabled: true
+              thresholds: {}
+
+            vol_regime:
+              enabled: true
+              thresholds: {}
+
+            mms_phase:
+              enabled: true
+              thresholds: {}
+
+            mms_confidence:
+              enabled: true
+              thresholds: {}
+
+            mms_range_high:
+              enabled: true
+              thresholds: {}
+
+            mms_range_low:
+              enabled: true
+              thresholds: {}
+
+            mms_range_age_bars:
+              enabled: true
+              thresholds: {}
+
+            mms_manipulation_side:
+              enabled: true
+              thresholds: {}
+
+            mms_distribution_dir:
+              enabled: true
+              thresholds: {}
+
+          ta_vol:
+            tr_value:
+              enabled: true
+              thresholds: {}
+
+            atr_value:
+              enabled: true
+              thresholds: {}
+
+            ta_vol__atr:
+              enabled: true
+              thresholds: {}
+
+            atr_pct_price:
+              enabled: true
+              thresholds: {}
+
+            atr_z:
+              enabled: true
+              thresholds: {}
+
+            vol_regime:
+              enabled: true
+              thresholds: {}
+
+            ret_std_value:
+              enabled: true
+              thresholds: {}
+
+            ret_std_z:
+              enabled: true
+              thresholds: {}
+
+            range_mean_value:
+              enabled: true
+              thresholds: {}
+
+            range_z:
+              enabled: true
+              thresholds: {}
+
+            bb_mid:
+              enabled: true
+              thresholds: {}
+
+            bb_upper:
+              enabled: true
+              thresholds: {}
+
+            bb_lower:
+              enabled: true
+              thresholds: {}
+
+            bb_width:
+              enabled: true
+              thresholds: {}
+
+            bb_width_z:
+              enabled: true
+              thresholds: {}
+
+            vol_state_bucket:
+              enabled: true
+              thresholds: {}
+
+            vov_value:
+              enabled: true
+              thresholds: {}
+
+            vov_z:
+              enabled: true
+              thresholds: {}
+
+            vol_instability_bucket:
+              enabled: true
+              thresholds: {}
+
+          stat_ts:
+            stat_ts_vol_zscore:
+              enabled: true
+              kind: zscore
+              role: volatility_filter
+              thresholds:
+                abs_min_for_signal: 1.0
+                abs_max_clip: 3.0
+
+          macro_calendar:
+            macro_is_blackout:
+              enabled: true
+              kind: binary_flag
+              role: compliance_filter
+              thresholds: {}
+
+            macro_blackout_max_impact:
+              enabled: true
+              kind: ordinal
+              role: compliance_context
+              thresholds: {}
+
+      "data/windows":
+        families:
+
+          vol_range:
+            vol_range_lookback_bars:
+              enabled: true
+              thresholds: {}
+
+            vol_range_realised_range:
+              enabled: true
+              thresholds: {}
+
+            vol_range_range_z:
+              enabled: true
+              thresholds: {}
+
+            vol_range_state:
+              enabled: true
+              thresholds: {}
+
+            vol_range_compress_flag:
+              enabled: true
+              thresholds: {}
+
+            vol_range_expand_flag:
+              enabled: true
+              thresholds: {}
+
+            vol_range_regime_id:
+              enabled: true
+              thresholds: {}
+
+            vol_range_regime_confidence:
+              enabled: true
+              thresholds: {}
+
+            vol_range_realised_range_norm:
+              enabled: true
+              thresholds: {}
+
+            vol_range_range_pct:
+              enabled: true
+              thresholds: {}
+
+            vol_range_range_z_clipped:
+              enabled: true
+              thresholds: {}
+
+            vol_range_width_value:
+              enabled: true
+              thresholds: {}
+
+            vol_range_width_z:
+              enabled: true
+              thresholds: {}
+
+            vol_range_width_pct:
+              enabled: true
+              thresholds: {}
+
+            vol_range_state_age_bars:
+              enabled: true
+              thresholds: {}
+
+            vol_range_state_switch_flag:
+              enabled: true
+              thresholds: {}
+
+            vol_range_last_switch_age_bars:
+              enabled: true
+              thresholds: {}
+
+            vol_range_compress_streak_bars:
+              enabled: true
+              thresholds: {}
+
+            vol_range_expand_streak_bars:
+              enabled: true
+              thresholds: {}
+
+            vol_range_squeeze_score:
+              enabled: true
+              thresholds: {}
+
+            vol_range_expansion_score:
+              enabled: true
+              thresholds: {}
+
+            vol_range_p_compress:
+              enabled: true
+              thresholds: {}
+
+            vol_range_p_neutral:
+              enabled: true
+              thresholds: {}
+
+            vol_range_p_expand:
+              enabled: true
+              thresholds: {}
