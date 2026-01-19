@@ -60,107 +60,127 @@ Every output produced in the deterministic lane **must** be keyed by the identit
 (base_seed, snapshot_id, run_id, cluster_id, trading_day, step_name)
 ```
 
-This ensures deterministic replay while allowing controlled stochasticity in research.
+---
+
+## 4) Canonical step order (engine lane)
+
+The deterministic pipeline runs the following ordered steps. **No paradigm may reorder or bypass steps.**
+
+1. **ingest**
+2. **features**
+3. **windows**
+4. **hypotheses**
+5. **critic**
+6. **pretrade**
+7. **gatekeeper**
+8. **portfolio**
+9. **brackets**
+10. **reports**
+
+Backtest-only step:
+
+- **fills** (only in backtest mode)
 
 ---
 
-## 3) Step contract (minimum requirements)
+## 5) Step contract (minimum required interface)
 
-Each step must define and enforce:
+Every step **must** define and enforce the following:
 
-### 3.1 Required inputs
-- Explicit list of required tables and minimum column sets.
-- Explicit config namespaces and keys.
+### 5.1 Required inputs
+- Required tables and minimum column sets.
+- Required config namespaces and keys.
 
-### 3.2 Outputs
-- Declared outputs (tables) with schemas and partition keys.
-- Ownership record that identifies the single writing step.
+### 5.2 Outputs
+- Persisted tables, schemas, partition keys, and owning step.
 
-### 3.3 Determinism
-- No implicit randomness. All randomness derived from canonical seed policy.
-- Tie-breaking rules must be explicit and deterministic (e.g., sort by timestamp then stable ID).
+### 5.3 Determinism
+- No implicit randomness. All randomness derives from the canonical seed policy.
+- Tie-breaking rules are explicit and deterministic.
 
-### 3.4 Validation
-- Fail fast if required inputs are missing or if required outputs contain nulls.
-- Output schema must conform to registry definitions (column names, dtypes, nullability).
+### 5.4 Validation
+- Fail fast if required inputs are missing.
+- Fail fast if required output columns are null.
+- Validate output schema against registry.
 
-### 3.5 Observability
-- Emit structured logs with `env`, `mode`, `snapshot_id`, `run_id`, `trading_day`, `cluster_id`.
-- Record row counts, input hashes, and output paths in a manifest.
+### 5.5 Observability
+- Structured logs with identity keys.
+- Row counts and manifests with input hashes/output paths.
 
 ---
 
-## 4) Artifact ownership and IO contract
+## 6) Artifact ownership and IO contract
 
 - Each artifact key maps to exactly one owning step.
-- Any change to ownership **must** update the IO contract and corresponding tests.
-- No artifact can be written by multiple steps.
+- Ownership changes require updates to the IO contract and tests.
+- No artifact may be written by more than one step.
 
-**Compliance tooling:**
-- `scripts/audit_io_contract.py` must pass after changes.
-
----
-
-## 5) Schema discipline
-
-### 5.1 Additive changes only
-- New columns are allowed; renames/removals require a versioned migration plan.
-
-### 5.2 Nullability rules
-- Columns marked required must never be null in deterministic outputs.
-- If a required column is missing or null, the step must error.
-
-### 5.3 Registry alignment
-- Any schema changes must be reflected in the schema registry and validation tooling.
+**Compliance tool:** `scripts/audit_io_contract.py` must pass after any ownership changes.
 
 ---
 
-## 6) Phase B compliance (deterministic lane)
+## 7) Schema discipline
 
-Phase B is a required engine contract. A pipeline is **not** Phase B compliant unless it does all of the following:
+1. **Additive changes only**
+   - Renames/removals require a versioned migration plan.
 
-1. **Windows as source of truth**
-   - Every anchor row in `data/windows` includes:
-     - `dr_id`, `dr_phase`, `dr_low`, `dr_high`, `dr_mid`, `dr_width`, `dr_age_bars`, `dr_start_ts`, `dr_last_update_ts`
-     - `pd_index`, `range_position`
-     - counters: `test_high_count`, `test_low_count`, `liq_eqh_count`, `liq_eql_count`
-     - `dr_reason_code` and any `dr_score_*` components
+2. **Nullability rules**
+   - Required columns must be non-null.
 
-2. **Event table for auditability**
-   - Write `data/market_events` (or `data/dealing_range_events`) with:
-     - `instrument`, `anchor_tf`, `ts`, `event_type`, `event_strength`, `ref_level`, `dr_id`, evidence fields
-
-3. **Deterministic event detection + state machine**
-   - Event detection must be stateless and fully parameterized via config.
-   - Phase transitions must be a deterministic fold over anchor rows.
-
-4. **No recomputation downstream**
-   - Hypotheses/critic/gatekeeper must consume `dr_*` fields and must not recompute Phase B.
-
-5. **Fail-fast validation**
-   - If `dr_phase` is present, the required `dr_*` fields must be non-null.
-
-6. **Golden tests**
-   - Store fixture OHLCV segments + expected phase labels per anchor timeframe.
+3. **Registry alignment**
+   - Any schema change must be reflected in the registry and validation tooling.
 
 ---
 
-## 7) Deterministic pipeline change checklist
+## 8) Phase B compliance (deterministic lane requirement)
 
-Any change to the deterministic pipeline **must** be accompanied by:
+A deterministic pipeline is **not** Phase B compliant unless it satisfies all requirements below.
+
+### 8.1 Windows as source of truth
+`data/windows` must contain, for each anchor row:
+
+- `dr_id`, `dr_phase`, `dr_low`, `dr_high`, `dr_mid`, `dr_width`
+- `dr_age_bars`, `dr_start_ts`, `dr_last_update_ts`
+- `pd_index`, `range_position`
+- counters: `test_high_count`, `test_low_count`, `liq_eqh_count`, `liq_eql_count`
+- `dr_reason_code` and optional `dr_score_*`
+
+### 8.2 Event table for auditability
+Write `data/market_events` (or `data/dealing_range_events`) containing:
+
+- `instrument`, `anchor_tf`, `ts`, `event_type`, `event_strength`, `ref_level`, `dr_id`, evidence fields
+
+### 8.3 Deterministic event detection + state machine
+- Event detectors are stateless, parameterized by config, and deterministic in tie-breaking.
+- Phase transitions occur via a deterministic fold over anchor rows.
+
+### 8.4 Downstream consumption only
+Hypotheses/critic/gatekeeper **consume** `dr_*` fields and **must not** recompute Phase B.
+
+### 8.5 Fail-fast validation
+If `dr_phase` is present, required `dr_*` fields must be non-null.
+
+### 8.6 Golden fixtures
+Golden fixtures must lock Phase B labeling stability per anchor timeframe.
+
+---
+
+## 9) Change checklist (mandatory for pipeline updates)
+
+Any deterministic pipeline change must include:
 
 - IO contract update (ownership + persisted keys).
-- Schema registry update (new columns, types, nullability).
+- Schema registry update (columns, types, nullability).
 - Tests:
-  - golden fixtures for deterministic labels where applicable.
-  - unit tests for new step logic.
-- Documentation update (this contract + relevant specs).
+  - Golden fixtures for deterministic labeling where applicable.
+  - Unit tests for new step logic.
+- Documentation update (this contract + any affected specs).
 
 ---
 
-## 8) Connected scripts/tools to review when changing the contract
+## 10) Connected scripts/tools to audit when the contract changes
 
-When steps, schemas, or ownership rules change, audit and update as needed:
+If steps, schemas, or ownership rules change, audit/update:
 
 - `scripts/run_microbatch.py`
 - `scripts/run_microbatch.ps1`
@@ -173,13 +193,13 @@ When steps, schemas, or ownership rules change, audit and update as needed:
 
 ---
 
-## 9) Compliance gates (definition of “done”)
+## 11) Compliance gates (definition of “done”)
 
-A pipeline change is **compliant** only when:
+A pipeline change is compliant only when:
 
 - Deterministic runs reproduce identical outputs across replays.
-- IO contract and schema registry are consistent with actual writers.
+- IO contract and schema registry match actual writers.
 - Phase B outputs and event provenance are present (when enabled).
 - Golden fixtures pass without drift.
-- All required logs and manifests are emitted for auditability.
+- Required logs and manifests are emitted for auditability.
 
