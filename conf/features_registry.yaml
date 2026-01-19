@@ -641,8 +641,8 @@ stat_ts:
 
 vol_range:
   table: "data/windows"
-  enabled: false
-  maturity: "stub"
+  enabled: true
+  maturity: "experimental"
   description: "Volatility/range compression-expansion regime features (range/width z, percentile, streak/age, state machine, and regime id/confidence)."
   primary_key: [instrument, anchor_tf, anchor_ts]
 

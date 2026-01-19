@@ -6,8 +6,12 @@ hypotheses:
   impl: "ict_all_windows"
   required_features:
     - "ict_struct"
+    - "ta_vol"
+    - "vol_range"
     - "stat_ts"
     - "macro_calendar"
+  tf_entry_allowlist:
+    - "S1"
   filters:
     vol_z_abs_min: 0.5
     swing_only: false
