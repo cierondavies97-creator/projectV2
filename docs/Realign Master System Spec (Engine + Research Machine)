@@ -204,6 +204,57 @@ deterministic behavior given (ctx, key)
 
 structured logging with run identifiers
 
+4.5 Deterministic pipeline contract (system-wide)
+
+This is the enforceable contract for every engine-aligned module in the system (engine steps, scripts, and any code that writes engine artifacts).
+
+Contract invariants (non-negotiable):
+
+- Single-writer rule: each artifact/table has exactly one owning step that writes it.
+- Deterministic by default: behavior is a pure function of (RunContext, MicrobatchKey, immutable inputs).
+- No hidden state: step functions cannot depend on global mutable state or implicit caches.
+- Strict schema discipline: add columns only in backward-compatible ways, with explicit nullability rules.
+- Fail-fast validation: if a required column is missing or null where required, the step must raise and abort the microbatch.
+- Full provenance: every output row carries RunContext keys and microbatch identity.
+- Stable partitioning: artifact partitioning must follow the identity model and never change implicitly.
+- Observability: each step writes metrics and manifests (row counts, input hashes, output paths).
+
+Step interface contract (minimum):
+
+- Inputs: required tables + minimum columns + config namespaces (explicit list per step).
+- Outputs: persisted table(s) + schema + partition keys + ownership record.
+- Deterministic RNG: any randomness must be derived from the canonical seed policy.
+- Audit trail: a step must be traceable through logging + artifact manifests.
+
+Compliance requirements:
+
+- Any new step, or any change to an existing step, must update the IO contract + schema registry and add golden tests where deterministic outputs are required.
+- Steps must not mutate configs; any changes to conf/ must be explicit, reviewable, and bound to a new snapshot_id.
+
+4.6 Phase B compliance requirements (deterministic lane)
+
+Phase B is a strict engine contract. To be considered compliant, the deterministic pipeline must:
+
+- Write canonical Phase B fields into data/windows on every anchor row (dr_id, dr_phase, dr_low/high/mid/width, dr_age_bars, dr_start_ts, dr_last_update_ts, pd_index, range_position, counters, reason codes).
+- Emit an event table (data/market_events or data/dealing_range_events) with one row per detected structural event and a stable event_type enum.
+- Use a deterministic, stateless event detector + state-machine fold to assign dr_phase and dr_reason_code.
+- Treat windows as the single source of truth for dr_phase; downstream steps may consume but must not recompute it.
+- Fail fast if Phase B-required fields are missing or null where required.
+- Maintain golden fixtures for each anchor timeframe to protect phase-label stability.
+
+4.7 Connected scripts & tooling that must be updated when the pipeline contract changes
+
+These scripts/tools are tightly coupled to the deterministic pipeline contract and must be audited for updates whenever steps, schemas, or ownership rules change:
+
+- scripts/run_microbatch.py: primary microbatch entrypoint and summary reporting.
+- scripts/run_microbatch.ps1: PowerShell wrapper for run_microbatch.py and CLI arg compatibility.
+- scripts/audit_io_contract.py: validates that write ownership matches the IO contract and step call-sites.
+- scripts/compile_features_registry_contract.py: enforces schema registration expectations for features/windows.
+- scripts/check_anchor_grid.py: validates anchor grid assumptions for windows and downstream joins.
+- scripts/smoke_validate_parquet.py: validates Parquet outputs; should reflect any new schemas or partitions.
+- scripts/dev_inspect_*: developer inspection tools for step artifacts (features/windows/hypotheses/critic/etc.).
+- scripts/run_ingest.py / scripts/run_features.py / scripts/run_reports.py: currently empty placeholders; must be implemented or removed to avoid ambiguity when the pipeline is rewritten.
+
 5) Paradigm interface (how “multi-paradigm” is implemented)
 5.1 Paradigm = config + plugin logic
 
