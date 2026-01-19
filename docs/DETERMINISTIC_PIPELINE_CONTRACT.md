@@ -1,71 +1,60 @@
-# Deterministic Pipeline Contract (Engine Lane)
+# Deterministic Pipeline Contract
 
-## 0) Purpose
-This document defines the **system-wide deterministic pipeline contract** for the engine lane. It is the enforceable standard for all engine steps, writers, and tooling that produce deterministic artifacts. The contract is designed to maximize:
+## 0) Purpose and scope
+This document defines the **enforceable contract** for the deterministic engine lane. It applies to:
 
-- **Reproducibility** (exact replays across time)
-- **Auditability** (clear provenance and explainability)
-- **Cross-paradigm comparability** (uniform schemas and step order)
-- **Operational clarity** (single-writer ownership, explicit inputs/outputs)
+- Engine steps and step modules.
+- Any script that writes engine artifacts (directly or indirectly).
+- Any schema/registry or IO contract that governs deterministic outputs.
 
-If any design or implementation conflicts with this contract, the conflict **must** be explicitly called out and resolved.
+The goal is to maximize **reproducibility, auditability, and cross-paradigm comparability** while keeping the engine lane **pure and replayable**.
 
----
-
-## 1) Scope
-This contract applies to:
-
-- All engine steps in the microbatch pipeline.
-- Any script or tool that writes engine artifacts.
-- Schema registries and IO ownership contracts that govern engine outputs.
-
-It does **not** define strategy logic; it defines how deterministic infrastructure behaves and how artifacts are produced.
+This contract **does not** define paradigm logic; it defines the *shared, non-negotiable rules* that all paradigms and steps must follow.
 
 ---
 
-## 2) Non-negotiable invariants
+## 1) Non-negotiable invariants
 
 1. **Single-writer rule**
-   - Each artifact/table is written by exactly one owning step.
+   - Every artifact/table has exactly one owning step that is allowed to write it.
 
-2. **Deterministic outputs**
-   - Outputs are a pure function of `(RunContext, MicrobatchKey, immutable inputs, configs, code version)`.
+2. **Deterministic by default**
+   - Given the same `(RunContext, MicrobatchKey, inputs, configs, code version)`, the outputs must be identical.
 
-3. **Immutable configs**
-   - Engine runs must never mutate live configs. Changes require explicit diffs and a new `snapshot_id`.
+3. **No hidden state**
+   - Step functions must not depend on global mutable state, implicit caches, or external services that are not versioned.
 
-4. **No hidden state**
-   - Steps cannot depend on implicit caches or mutable global state.
+4. **Immutable config inputs**
+   - Engine runs must never mutate `conf/` or live configs. Changes require explicit diffs and a new `snapshot_id`.
 
 5. **Fail-fast validation**
-   - Required columns and non-null constraints must be enforced. Silent coercion is forbidden.
+   - Required columns and non-null constraints must be enforced. Silent coercions are forbidden.
 
 6. **Stable partitioning**
-   - Partition keys are part of the contract. Do not change implicitly.
+   - Artifact partition keys are part of the contract. They must not change implicitly.
 
 7. **Full provenance**
-   - Every row contains run identity + microbatch identity keys.
+   - Each output row carries run identity and microbatch identity keys.
 
-8. **Observability**
-   - Steps must emit structured logs, row counts, and manifests (input hashes, output paths).
+8. **Observable and debuggable**
+   - Each step must produce structured logs, row counts, and manifests with input hashes and output paths.
 
 ---
 
-## 3) Canonical identity model (required on all artifacts)
+## 2) Canonical identity model (required on all artifacts)
 
-Every deterministic artifact must include the identity model:
+Every output produced in the deterministic lane **must** be keyed by the identity model:
 
 - `env` (dev | prod | research)
 - `mode` (backtest | paper | live)
-- `snapshot_id`
-- `run_id`
-- `trading_day` (or `dt`)
-- `cluster_id`
-- `instrument` (if per-instrument)
-- `paradigm_id` (if applicable)
-- `principle_id` (optional)
+- `snapshot_id` (immutable input snapshot)
+- `run_id` (unique per run)
+- `trading_day` / `dt`
+- `instrument` / `cluster_id`
+- `paradigm_id` (when applicable)
+- `principle_id` (optional, when applicable)
 
-**RNG policy:** any randomness must derive from the canonical seed:
+**RNG policy:** any randomness must be derived from a canonical seed constructed from:
 
 ```
 (base_seed, snapshot_id, run_id, cluster_id, trading_day, step_name)
