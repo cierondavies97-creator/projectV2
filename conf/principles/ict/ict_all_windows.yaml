@@ -16,3 +16,25 @@ hypotheses:
     vol_z_abs_min: 0.5
     swing_only: false
     allow_macro_blackout: false
+
+params:
+  entry_px_sources:
+    long:
+      - "ict_struct_swing_low"
+      - "bos_level_px"
+      - "choch_level_px"
+      - "ict_struct_dealing_range_mid"
+    short:
+      - "ict_struct_swing_high"
+      - "bos_level_px"
+      - "choch_level_px"
+      - "ict_struct_dealing_range_mid"
+  exit_px_sources:
+    long:
+      - "ict_struct_dealing_range_high"
+      - "eqh_level_px"
+      - "bos_level_px"
+    short:
+      - "ict_struct_dealing_range_low"
+      - "eql_level_px"
+      - "bos_level_px"

@@ -1,6 +1,6 @@
 ﻿{
     "snapshot_id":  "dev_retail_v1_ict",
-    "description":  "Dev smoke snapshot: single day, single instrument (XAUUSD), tiny slice for microbatch tests. | ICT enabled | S1 entry-only",
+    "description":  "Dev smoke snapshot: single day, single instrument (XAUUSD), tiny slice for microbatch tests. | ICT enabled | S1 entry-only | entry/exit px sources",
     "created_ts":  "2025-12-22T23:59:01Z",
     "config_refs":  {
                         "retail_config_path":  "conf/retail.yaml",

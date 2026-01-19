@@ -113,6 +113,77 @@ def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(frames, how="vertical") if frames else df
 
 
+def _safe_truncate_rule(tf: str | None) -> str | None:
+    if tf is None:
+        return None
+    try:
+        return tf_to_truncate_rule(str(tf))
+    except ValueError:
+        return None
+
+
+def _add_entry_alignment_flag(
+    df: pl.DataFrame,
+    *,
+    tf_col: str,
+    flag_col: str,
+) -> pl.DataFrame:
+    if df is None or df.is_empty():
+        return pl.DataFrame() if df is None else df
+    if "entry_ts" not in df.columns or tf_col not in df.columns:
+        return df
+
+    frames: list[pl.DataFrame] = []
+    for (tf_val,), grp in df.group_by([tf_col], maintain_order=True):
+        rule = _safe_truncate_rule(str(tf_val) if tf_val is not None else None)
+        if rule is None:
+            frames.append(grp.with_columns(pl.lit(None).cast(pl.Boolean).alias(flag_col)))
+            continue
+        entry_ts = pl.col("entry_ts").cast(pl.Datetime("us"), strict=False)
+        aligned = entry_ts.dt.truncate(rule) == entry_ts
+        frames.append(grp.with_columns(aligned.alias(flag_col)))
+    return pl.concat(frames, how="vertical") if frames else df
+
+
+def _coalesce_cols(df: pl.DataFrame, cols: list[str], *, dtype: pl.DataType) -> pl.Expr:
+    existing = [pl.col(c).cast(dtype, strict=False) for c in cols if c in df.columns]
+    if not existing:
+        return pl.lit(None).cast(dtype)
+    return pl.coalesce(existing)
+
+
+def _resolve_price_sources(
+    cfg: dict[str, Any],
+    *,
+    key: str,
+    defaults_long: list[str],
+    defaults_short: list[str],
+) -> tuple[list[str], list[str]]:
+    params = cfg.get("params") if isinstance(cfg, dict) else {}
+    sources = params.get(key) if isinstance(params, dict) else None
+    if isinstance(sources, dict):
+        long_list = [str(x) for x in sources.get("long", []) if str(x).strip()]
+        short_list = [str(x) for x in sources.get("short", []) if str(x).strip()]
+        return (long_list or defaults_long), (short_list or defaults_short)
+    if isinstance(sources, list):
+        flat = [str(x) for x in sources if str(x).strip()]
+        return (flat or defaults_long), (flat or defaults_short)
+    return defaults_long, defaults_short
+
+
+def _resolve_side_sources(
+    cfg: dict[str, Any],
+    *,
+    defaults: list[str],
+) -> list[str]:
+    params = cfg.get("params") if isinstance(cfg, dict) else {}
+    sources = params.get("side_sources") if isinstance(params, dict) else None
+    if isinstance(sources, list):
+        resolved = [str(x) for x in sources if str(x).strip()]
+        return resolved or defaults
+    return defaults
+
+
 # -----------------------------------------------------------------------------
 # Decisions helpers
 # -----------------------------------------------------------------------------
@@ -278,6 +349,54 @@ def build_ict_hypotheses(
 
     candidates = df.filter(cond) if cond is not None else df
     selected = _select_candidate_windows(candidates if not candidates.is_empty() else df)
+
+    side_sources = _resolve_side_sources(
+        cfg,
+        defaults=["bos_dir", "choch_dir", "ict_struct_swing_trend_dir", "mms_distribution_dir", "liq_sweep_side"],
+    )
+    side_raw = _coalesce_cols(selected, side_sources, dtype=pl.Utf8)
+    side_expr = (
+        pl.when(side_raw.is_in(["long", "short"]))
+        .then(side_raw)
+        .when(side_raw == "up")
+        .then(pl.lit("long"))
+        .when(side_raw == "down")
+        .then(pl.lit("short"))
+        .when(side_raw == "bull")
+        .then(pl.lit("long"))
+        .when(side_raw == "bear")
+        .then(pl.lit("short"))
+        .when(side_raw == "buy")
+        .then(pl.lit("long"))
+        .when(side_raw == "sell")
+        .then(pl.lit("short"))
+        .otherwise(pl.lit("long"))
+    )
+
+    entry_sources_long, entry_sources_short = _resolve_price_sources(
+        cfg,
+        key="entry_px_sources",
+        defaults_long=["ict_struct_swing_low", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
+        defaults_short=["ict_struct_swing_high", "bos_level_px", "choch_level_px", "ict_struct_dealing_range_mid"],
+    )
+    exit_sources_long, exit_sources_short = _resolve_price_sources(
+        cfg,
+        key="exit_px_sources",
+        defaults_long=["ict_struct_dealing_range_high", "eqh_level_px", "bos_level_px"],
+        defaults_short=["ict_struct_dealing_range_low", "eql_level_px", "bos_level_px"],
+    )
+
+    entry_px_expr = pl.when(side_expr == pl.lit("long")).then(
+        _coalesce_cols(selected, entry_sources_long, dtype=pl.Float64)
+    ).otherwise(
+        _coalesce_cols(selected, entry_sources_short, dtype=pl.Float64)
+    )
+
+    exit_px_expr = pl.when(side_expr == pl.lit("long")).then(
+        _coalesce_cols(selected, exit_sources_long, dtype=pl.Float64)
+    ).otherwise(
+        _coalesce_cols(selected, exit_sources_short, dtype=pl.Float64)
+    )
     if selected.is_empty():
         return _empty_decisions(ctx, paradigm_id, principle_id), pl.DataFrame()
 
@@ -311,8 +430,6 @@ def build_ict_hypotheses(
         else pl.lit(None).cast(pl.Int64)
     )
 
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
-
     # Decisions frame (stage writer will add dt later; keep minimal here)
     decisions_df = selected.select(
         [
@@ -339,8 +456,6 @@ def build_ict_hypotheses(
     else:
         dt_expr = pl.col("anchor_ts").dt.date().cast(pl.Date, strict=False)
 
-    side_expr = pl.when(pl.col("anchor_ts").dt.hour() < 12).then(pl.lit("long")).otherwise(pl.lit("short"))
-
     tp_df = selected.select(
         [
             pl.lit(snapshot_id).cast(pl.Utf8).alias("snapshot_id"),
@@ -357,13 +472,24 @@ def build_ict_hypotheses(
             side_expr.cast(pl.Utf8).alias("side"),
             pl.col("anchor_tf").cast(pl.Utf8, strict=False).alias("anchor_tf"),
             pl.col("tf_entry").cast(pl.Utf8, strict=False).alias("tf_entry"),
+            pl.col("anchor_ts").cast(pl.Datetime("us"), strict=False).alias("anchor_ts"),
             pl.col("anchor_ts").alias("entry_ts"),
-            pl.lit(None).cast(pl.Float64).alias("entry_px"),
+            pl.lit("anchor_close").cast(pl.Utf8).alias("entry_ts_source"),
+            pl.lit(None).cast(pl.Int64).alias("entry_ts_offset_ms"),
+            pl.lit(True).cast(pl.Boolean).alias("entry_ts_is_aligned_anchor_tf"),
+            pl.lit(None).cast(pl.Boolean).alias("entry_ts_is_aligned_entry_tf"),
+            entry_px_expr.alias("entry_px"),
+            exit_px_expr.alias("exit_px"),
             pl.lit("candidate").cast(pl.Utf8).alias("principle_status_at_entry"),
             pl.lit("phaseA_auto").cast(pl.Utf8).alias("entry_mode"),
         ]
     )
 
+    tp_df = _add_entry_alignment_flag(
+        tp_df,
+        tf_col="tf_entry",
+        flag_col="entry_ts_is_aligned_entry_tf",
+    )
     tp_df = _ensure_trade_paths_schema(tp_df)
 
     log.info("ict.hypotheses: produced decisions=%d trade_paths=%d", decisions_df.height, tp_df.height)
