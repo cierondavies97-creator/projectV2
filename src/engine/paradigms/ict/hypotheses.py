@@ -113,6 +113,15 @@ def _truncate_anchor_ts_by_tf(df: pl.DataFrame) -> pl.DataFrame:
     return pl.concat(frames, how="vertical") if frames else df
 
 
+def _safe_truncate_rule(tf: str | None) -> str | None:
+    if tf is None:
+        return None
+    try:
+        return tf_to_truncate_rule(str(tf))
+    except ValueError:
+        return None
+
+
 def _add_entry_alignment_flag(
     df: pl.DataFrame,
     *,
@@ -126,10 +135,10 @@ def _add_entry_alignment_flag(
 
     frames: list[pl.DataFrame] = []
     for (tf_val,), grp in df.group_by([tf_col], maintain_order=True):
-        if tf_val is None:
-            frames.append(grp.with_columns(pl.lit(False).alias(flag_col)))
+        rule = _safe_truncate_rule(str(tf_val) if tf_val is not None else None)
+        if rule is None:
+            frames.append(grp.with_columns(pl.lit(None).cast(pl.Boolean).alias(flag_col)))
             continue
-        rule = tf_to_truncate_rule(str(tf_val))
         entry_ts = pl.col("entry_ts").cast(pl.Datetime("us"), strict=False)
         aligned = entry_ts.dt.truncate(rule) == entry_ts
         frames.append(grp.with_columns(aligned.alias(flag_col)))
