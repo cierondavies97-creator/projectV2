@@ -1860,6 +1860,183 @@ xs_relval:
 
 
 # ------------------------------------------------------------------------
+# Deterministic market-state primitives (Phase B–E + microstructure + vol)
+# ------------------------------------------------------------------------
+dealing_range_state:
+  table: "data/windows"
+  enabled: false
+  maturity: "experimental"
+  description: "Deterministic dealing-range state machine outputs (Phase B–E evidence)."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - dealing_range_lookback_bars
+    - min_range_bars
+    - width_min_ticks
+    - width_min_atr_mult
+    - test_band_ticks
+    - test_band_atr_mult
+    - p_inside_min
+    - break_fail_bars
+    - accept_bars_min
+    - spring_penetration_ticks
+    - spring_penetration_atr_mult
+    - reclaim_bars_max
+    - reclaim_ticks
+    - reclaim_atr_mult
+    - trend_distance_atr
+    - trend_width_mult
+    - trend_bars_min
+    - eq_level_ticks_max
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    dr_id:              { role: feature, dtype: string }
+    dr_phase:           { role: feature, dtype: string }   # B|C|D|E|NONE
+    dr_low:             { role: feature, dtype: double }
+    dr_high:            { role: feature, dtype: double }
+    dr_mid:             { role: feature, dtype: double }
+    dr_width:           { role: feature, dtype: double }
+    dr_width_atr:       { role: feature, dtype: double }
+    dr_start_ts:        { role: feature, dtype: timestamp }
+    dr_last_update_ts:  { role: feature, dtype: timestamp }
+    dr_age_bars:        { role: feature, dtype: int }
+
+    inside_ratio_L:     { role: feature, dtype: double }
+    tests_L:            { role: feature, dtype: int }
+    test_high_count_L:  { role: feature, dtype: int }
+    test_low_count_L:   { role: feature, dtype: int }
+
+    probe_side:         { role: feature, dtype: string }
+    pierce_dist:        { role: feature, dtype: double }
+    reclaim_margin:     { role: feature, dtype: double }
+    accept_dist:        { role: feature, dtype: double }
+    accept_bars:        { role: feature, dtype: int }
+    retest_pass:        { role: feature, dtype: boolean }
+    trend_dist:         { role: feature, dtype: double }
+    trend_bars:         { role: feature, dtype: int }
+    dr_reason_code:     { role: feature, dtype: string }
+
+    pd_index:           { role: feature, dtype: double }
+    range_position:     { role: feature, dtype: double }
+    liq_eqh_count:      { role: feature, dtype: int }
+    liq_eql_count:      { role: feature, dtype: int }
+
+    phase_version:        { role: feature, dtype: string }
+    threshold_bundle_id:  { role: feature, dtype: string }
+    micro_policy_id:      { role: feature, dtype: string }
+    jump_policy_id:       { role: feature, dtype: string }
+    impact_policy_id:     { role: feature, dtype: string }
+    options_policy_id:    { role: feature, dtype: string }
+
+microstructure_flow:
+  table: "data/features"
+  enabled: false
+  maturity: "experimental"
+  description: "Aggression imbalance, OFI proxies, and event intensity per anchor window."
+  primary_key: [instrument, anchor_tf, ts]
+
+  threshold_keys:
+    - micro_flow_window_bars
+    - micro_imbalance_clip_abs
+    - micro_intensity_window_secs
+    - micro_ofi_method
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    agg_imbalance:     { role: feature, dtype: double }
+    ofi:               { role: feature, dtype: double }
+    intensity:         { role: feature, dtype: double }
+    intensity_trades:  { role: feature, dtype: double }
+    intensity_cancels: { role: feature, dtype: double }
+    micro_policy_id:   { role: feature, dtype: string }
+
+jump_variation:
+  table: "data/features"
+  enabled: false
+  maturity: "experimental"
+  description: "RV/BV/JV and semivariances derived from intraday returns."
+  primary_key: [instrument, anchor_tf, ts]
+
+  threshold_keys:
+    - jump_base_tf
+    - jump_window_bars
+    - jump_clip_abs
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    rv:             { role: feature, dtype: double }
+    bv:             { role: feature, dtype: double }
+    jv:             { role: feature, dtype: double }
+    rs_pos:         { role: feature, dtype: double }
+    rs_neg:         { role: feature, dtype: double }
+    jump_policy_id: { role: feature, dtype: string }
+
+impact_lambda:
+  table: "data/features"
+  enabled: false
+  maturity: "experimental"
+  description: "Kyle's lambda impact estimates and regime labels."
+  primary_key: [instrument, anchor_tf, ts]
+
+  threshold_keys:
+    - impact_window_bars
+    - impact_lambda_clip_abs
+    - impact_regime_edges_json
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+
+    kyle_lambda:      { role: feature, dtype: double }
+    impact_regime:    { role: feature, dtype: string }
+    impact_policy_id: { role: feature, dtype: string }
+
+options_context:
+  table: "data/windows"
+  enabled: false
+  maturity: "experimental"
+  description: "Options-derived context (Black-76 IV/Greeks, skew/term, VRP, model-free IV)."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - options_source_chain
+    - options_iv_solver
+    - options_strike_bucket_method
+    - options_rr_delta
+    - options_bf_delta
+    - options_term_near_days
+    - options_term_far_days
+    - options_mf_strike_spread_max
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    atm_iv:            { role: feature, dtype: double }
+    delta_atm:         { role: feature, dtype: double }
+    vega_atm:          { role: feature, dtype: double }
+    gamma_atm:         { role: feature, dtype: double }
+    skew_rr_25:        { role: feature, dtype: double }
+    bf_25:             { role: feature, dtype: double }
+    term_slope:        { role: feature, dtype: double }
+    vrp:               { role: feature, dtype: double }
+    mf_iv:             { role: feature, dtype: double }
+    options_policy_id: { role: feature, dtype: string }
+
+
+# ------------------------------------------------------------------------
 # Macro calendar & regimes (global per dt, joinable by ts)
 # ------------------------------------------------------------------------
 macro_calendar:

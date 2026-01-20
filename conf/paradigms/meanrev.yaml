@@ -1,0 +1,16 @@
+paradigm_id: "meanrev"
+enabled: false
+maturity: "stub"
+description: "Mean reversion paradigm (config stub)."
+
+default_principle_id: "meanrev_default"
+
+feature_families:
+  - "stat_ts"
+  - "ta_vol"
+  - "vol_range"
+  - "microstructure_flow"
+  - "jump_variation"
+  - "impact_lambda"
+  - "dealing_range_state"
+  - "options_context"

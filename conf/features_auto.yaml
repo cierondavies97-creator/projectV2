@@ -57,6 +57,40 @@ paradigms:
                 abs_min_for_signal: 0.5
                 abs_max_clip: 3.0
 
+          microstructure_flow:
+            agg_imbalance:
+              enabled: false
+              kind: zscore
+              role: micro_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            ofi:
+              enabled: false
+              kind: zscore
+              role: micro_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            intensity:
+              enabled: false
+              kind: zscore
+              role: activity_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+          jump_variation:
+            jv:
+              enabled: false
+              kind: zscore
+              role: jump_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
           macro_calendar:
             macro_is_blackout:
               enabled: true
@@ -498,6 +532,49 @@ paradigms:
                 abs_min_for_signal: 1.0
                 abs_max_clip: 3.0
 
+          microstructure_flow:
+            agg_imbalance:
+              enabled: false
+              kind: zscore
+              role: micro_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            ofi:
+              enabled: false
+              kind: zscore
+              role: micro_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            intensity:
+              enabled: false
+              kind: zscore
+              role: activity_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+          jump_variation:
+            jv:
+              enabled: false
+              kind: zscore
+              role: jump_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+          impact_lambda:
+            kyle_lambda:
+              enabled: false
+              kind: zscore
+              role: impact_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
           macro_calendar:
             macro_is_blackout:
               enabled: true
@@ -513,6 +590,46 @@ paradigms:
 
       "data/windows":
         families:
+
+          dealing_range_state:
+            dr_phase:
+              enabled: false
+              kind: categorical
+              role: regime_context
+              thresholds: {}
+
+            pd_index:
+              enabled: false
+              kind: zscore
+              role: range_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+          options_context:
+            atm_iv:
+              enabled: false
+              kind: zscore
+              role: vol_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            skew_rr_25:
+              enabled: false
+              kind: zscore
+              role: vol_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
+
+            term_slope:
+              enabled: false
+              kind: zscore
+              role: vol_context
+              thresholds:
+                abs_min_for_signal: 0.5
+                abs_max_clip: 3.0
 
           vol_range:
             vol_range_lookback_bars:
