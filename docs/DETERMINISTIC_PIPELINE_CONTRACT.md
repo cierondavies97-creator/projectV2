@@ -1,60 +1,91 @@
-# Deterministic Pipeline Contract
+# Deterministic Pipeline Contract (Engine Lane)
 
-## 0) Purpose and scope
-This document defines the **enforceable contract** for the deterministic engine lane. It applies to:
+## 0) Purpose
+This document defines the **system-wide deterministic pipeline contract** for the engine lane. It is the enforceable standard for all engine steps, writers, and tooling that produce deterministic artifacts. The contract is designed to maximize:
 
-- Engine steps and step modules.
-- Any script that writes engine artifacts (directly or indirectly).
-- Any schema/registry or IO contract that governs deterministic outputs.
+- **Reproducibility** (exact replays across time)
+- **Auditability** (clear provenance and explainability)
+- **Cross-paradigm comparability** (uniform schemas and step order)
+- **Operational clarity** (single-writer ownership, explicit inputs/outputs)
 
-The goal is to maximize **reproducibility, auditability, and cross-paradigm comparability** while keeping the engine lane **pure and replayable**.
-
-This contract **does not** define paradigm logic; it defines the *shared, non-negotiable rules* that all paradigms and steps must follow.
+If any design or implementation conflicts with this contract, the conflict **must** be explicitly called out and resolved.
 
 ---
 
-## 1) Non-negotiable invariants
+## 1) Scope
+This contract applies to:
+
+- All engine steps in the microbatch pipeline.
+- Any script or tool that writes engine artifacts.
+- Schema registries and IO ownership contracts that govern engine outputs.
+
+It does **not** define strategy logic; it defines how deterministic infrastructure behaves and how artifacts are produced.
+
+---
+
+## 2) Deterministic market-structure scope (Phase B–E)
+
+The deterministic pipeline **must** treat Phase B–E as a **state machine** driven by explicit formulas and evidence fields:
+
+- All phase labels (`dr_phase`) are produced only in `features → windows`.
+- All transitions emit reason codes plus measurable evidence (probe/reclaim/accept/trend).
+- No step may recompute or override phase labels downstream.
+
+**Minimum required evidence fields** (per anchor row):
+
+- `dr_id`, `dr_phase`, `dr_low`, `dr_high`, `dr_mid`, `dr_width`, `dr_width_atr`
+- `dr_start_ts`, `dr_last_update_ts`, `dr_age_bars`
+- `inside_ratio_L`, `tests_L`, `test_high_count_L`, `test_low_count_L`
+- transition evidence: `probe_side`, `pierce_dist`, `reclaim_margin`, `accept_dist`, `accept_bars`, `retest_pass`, `trend_dist`, `trend_bars`
+- `dr_reason_code` (string enum)
+
+These fields are required for auditability and reproducibility of Phases B–E.
+
+---
+
+## 3) Non-negotiable invariants
 
 1. **Single-writer rule**
-   - Every artifact/table has exactly one owning step that is allowed to write it.
+   - Each artifact/table is written by exactly one owning step.
 
-2. **Deterministic by default**
-   - Given the same `(RunContext, MicrobatchKey, inputs, configs, code version)`, the outputs must be identical.
+2. **Deterministic outputs**
+   - Outputs are a pure function of `(RunContext, MicrobatchKey, immutable inputs, configs, code version)`.
 
-3. **No hidden state**
-   - Step functions must not depend on global mutable state, implicit caches, or external services that are not versioned.
+3. **Immutable configs**
+   - Engine runs must never mutate live configs. Changes require explicit diffs and a new `snapshot_id`.
 
-4. **Immutable config inputs**
-   - Engine runs must never mutate `conf/` or live configs. Changes require explicit diffs and a new `snapshot_id`.
+4. **No hidden state**
+   - Steps cannot depend on implicit caches or mutable global state.
 
 5. **Fail-fast validation**
-   - Required columns and non-null constraints must be enforced. Silent coercions are forbidden.
+   - Required columns and non-null constraints must be enforced. Silent coercion is forbidden.
 
 6. **Stable partitioning**
-   - Artifact partition keys are part of the contract. They must not change implicitly.
+   - Partition keys are part of the contract. Do not change implicitly.
 
 7. **Full provenance**
-   - Each output row carries run identity and microbatch identity keys.
+   - Every row contains run identity + microbatch identity keys.
 
-8. **Observable and debuggable**
-   - Each step must produce structured logs, row counts, and manifests with input hashes and output paths.
+8. **Observability**
+   - Steps must emit structured logs, row counts, and manifests (input hashes, output paths).
 
 ---
 
-## 2) Canonical identity model (required on all artifacts)
+## 4) Canonical identity model (required on all artifacts)
 
-Every output produced in the deterministic lane **must** be keyed by the identity model:
+Every deterministic artifact must include the identity model:
 
 - `env` (dev | prod | research)
 - `mode` (backtest | paper | live)
-- `snapshot_id` (immutable input snapshot)
-- `run_id` (unique per run)
-- `trading_day` / `dt`
-- `instrument` / `cluster_id`
-- `paradigm_id` (when applicable)
-- `principle_id` (optional, when applicable)
+- `snapshot_id`
+- `run_id`
+- `trading_day` (or `dt`)
+- `cluster_id`
+- `instrument` (if per-instrument)
+- `paradigm_id` (if applicable)
+- `principle_id` (optional)
 
-**RNG policy:** any randomness must be derived from a canonical seed constructed from:
+**RNG policy:** any randomness must derive from the canonical seed:
 
 ```
 (base_seed, snapshot_id, run_id, cluster_id, trading_day, step_name)
@@ -83,33 +114,33 @@ Backtest-only step:
 
 ---
 
-## 5) Step contract (minimum required interface)
+## 6) Step contract (minimum required interface)
 
 Every step **must** define and enforce the following:
 
-### 5.1 Required inputs
+### 6.1 Required inputs
 - Required tables and minimum column sets.
 - Required config namespaces and keys.
 
-### 5.2 Outputs
+### 6.2 Outputs
 - Persisted tables, schemas, partition keys, and owning step.
 
-### 5.3 Determinism
+### 6.3 Determinism
 - No implicit randomness. All randomness derives from the canonical seed policy.
 - Tie-breaking rules are explicit and deterministic.
 
-### 5.4 Validation
+### 6.4 Validation
 - Fail fast if required inputs are missing.
 - Fail fast if required output columns are null.
 - Validate output schema against registry.
 
-### 5.5 Observability
+### 6.5 Observability
 - Structured logs with identity keys.
 - Row counts and manifests with input hashes/output paths.
 
 ---
 
-## 6) Artifact ownership and IO contract
+## 7) Artifact ownership and IO contract
 
 - Each artifact key maps to exactly one owning step.
 - Ownership changes require updates to the IO contract and tests.
@@ -119,7 +150,7 @@ Every step **must** define and enforce the following:
 
 ---
 
-## 7) Schema discipline
+## 8) Schema discipline
 
 1. **Additive changes only**
    - Renames/removals require a versioned migration plan.
@@ -132,11 +163,11 @@ Every step **must** define and enforce the following:
 
 ---
 
-## 8) Phase B compliance (deterministic lane requirement)
+## 9) Phase B–E compliance (deterministic lane requirement)
 
-A deterministic pipeline is **not** Phase B compliant unless it satisfies all requirements below.
+A deterministic pipeline is **not** Phase B–E compliant unless it satisfies all requirements below.
 
-### 8.1 Windows as source of truth
+### 9.1 Windows as source of truth
 `data/windows` must contain, for each anchor row:
 
 - `dr_id`, `dr_phase`, `dr_low`, `dr_high`, `dr_mid`, `dr_width`
@@ -144,28 +175,59 @@ A deterministic pipeline is **not** Phase B compliant unless it satisfies all re
 - `pd_index`, `range_position`
 - counters: `test_high_count`, `test_low_count`, `liq_eqh_count`, `liq_eql_count`
 - `dr_reason_code` and optional `dr_score_*`
+- `dr_width_atr`, `inside_ratio_L`, `tests_L`
+- `probe_side`, `pierce_dist`, `reclaim_margin`, `accept_dist`, `accept_bars`, `retest_pass`, `trend_dist`, `trend_bars`
 
-### 8.2 Event table for auditability
+### 9.2 Event table for auditability
 Write `data/market_events` (or `data/dealing_range_events`) containing:
 
 - `instrument`, `anchor_tf`, `ts`, `event_type`, `event_strength`, `ref_level`, `dr_id`, evidence fields
 
-### 8.3 Deterministic event detection + state machine
+### 9.3 Deterministic event detection + state machine
 - Event detectors are stateless, parameterized by config, and deterministic in tie-breaking.
 - Phase transitions occur via a deterministic fold over anchor rows.
 
-### 8.4 Downstream consumption only
+### 9.4 Downstream consumption only
 Hypotheses/critic/gatekeeper **consume** `dr_*` fields and **must not** recompute Phase B.
 
-### 8.5 Fail-fast validation
+### 9.5 Fail-fast validation
 If `dr_phase` is present, required `dr_*` fields must be non-null.
 
-### 8.6 Golden fixtures
-Golden fixtures must lock Phase B labeling stability per anchor timeframe.
+### 9.6 Golden fixtures
+Golden fixtures must lock Phase B–E labeling stability per anchor timeframe.
 
 ---
 
-## 9) Change checklist (mandatory for pipeline updates)
+## 10) Policy IDs and versioning (required)
+
+Every deterministic output must carry version/policy identifiers to make runs comparable:
+
+- `phase_version`, `threshold_bundle_id`
+- `micro_policy_id`, `jump_policy_id`, `impact_policy_id`, `options_policy_id`
+
+These IDs are part of the artifact identity and **must** be persisted in outputs.
+
+---
+
+## 11) MarketState cube (canonical output)
+
+The deterministic lane must produce (or be able to derive) a canonical MarketState cube keyed by:
+
+`(instrument, anchor_tf, anchor_ts)`
+
+**Required components**:
+
+- Phase B–E fields + evidence (`dr_*`, probe/reclaim/accept/retest/trend reason codes)
+- Microstructure fields (AggImb/OFI/intensity)
+- Jump/vol fields (RV/BV/JV + semivariance)
+- Impact fields (Kyle λ + regime)
+- Options context fields (ATM IV, skew, term slope, VRP, model-free implied variance if feasible)
+
+This cube is the canonical context for strategies. Any missing component must be explicitly null with a documented policy reason.
+
+---
+
+## 12) Change checklist (mandatory for pipeline updates)
 
 Any deterministic pipeline change must include:
 
@@ -178,7 +240,7 @@ Any deterministic pipeline change must include:
 
 ---
 
-## 10) Connected scripts/tools to audit when the contract changes
+## 13) Connected scripts/tools to audit when the contract changes
 
 If steps, schemas, or ownership rules change, audit/update:
 
@@ -193,7 +255,7 @@ If steps, schemas, or ownership rules change, audit/update:
 
 ---
 
-## 11) Compliance gates (definition of “done”)
+## 14) Compliance gates (definition of “done”)
 
 A pipeline change is compliant only when:
 
@@ -202,4 +264,3 @@ A pipeline change is compliant only when:
 - Phase B outputs and event provenance are present (when enabled).
 - Golden fixtures pass without drift.
 - Required logs and manifests are emitted for auditability.
-

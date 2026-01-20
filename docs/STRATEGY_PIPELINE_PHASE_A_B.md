@@ -1,10 +1,10 @@
-# Strategy Pipeline (Phase A & Phase B)
+# Strategy Pipeline (Phase A–E)
 
 ## 0) Purpose
-This document defines the **strategy pipelines** for both the deterministic engine lane and the research/training lane, with explicit handling of **Phase A** and **Phase B**. It is designed to ensure:
+This document defines the **strategy pipelines** for both the deterministic engine lane and the research/training lane, with explicit handling of **Phase A through Phase E**. It is designed to ensure:
 
 - Deterministic, reproducible artifacts in the engine lane.
-- Auditability of Phase A/Phase B labeling and event provenance.
+- Auditability of Phase A–E labeling and event provenance.
 - Clear separation between deterministic production logic and stochastic research workflows.
 
 ---
@@ -21,7 +21,7 @@ All artifacts are partitioned by identity keys to preserve reproducibility and c
 
 ---
 
-## 2) Deterministic engine lane pipeline (Phase A → Phase B)
+## 2) Deterministic engine lane pipeline (Phase A → Phase E)
 
 ### 2.1 Deterministic pipeline order
 The deterministic lane uses the canonical step chain:
@@ -39,7 +39,7 @@ The deterministic lane uses the canonical step chain:
 
 *(Backtest-only: **fills**.)*
 
-Phase A/Phase B live inside **features → windows**, and must be deterministic and repeatable.
+Phase A–E live inside **features → windows**, and must be deterministic and repeatable.
 
 ---
 
@@ -92,17 +92,39 @@ Phase B is a **persistent label** and context state stored in `data/windows`.
 
 ---
 
-### 2.4 Deterministic strategy hooks (Phase A/B aware)
-Strategy hypotheses are conditioned on Phase A/B context:
+### 2.4 Phase C–E (deterministic transitions)
+Phase C–E represent probe → acceptance → trend regimes and are written to `data/windows` as deterministic state transitions.
+
+**Phase C (probe + reclaim)**:
+- Candidate when `probe_low` or `probe_high` fires.
+- Confirmed when reclaim happens within `reclaim_bars_max`.
+- Failed if acceptance (Phase D) triggers before reclaim.
+
+**Phase D (acceptance + retest)**:
+- Enter when `accept_up` or `accept_dn` persists for `accept_bars_min`.
+- Retest must hold; failure triggers `FAILED_BREAK` with policy-specific behavior.
+
+**Phase E (trend regime)**:
+- Enter when distance-from-mid persists (`trend_bars_min`) and no re-entry occurs.
+
+All Phase C–E outputs are written with reason codes and evidence fields (probe side, pierce distance, reclaim margin, acceptance distance/persistence, retest pass/fail, trend distance/persistence).
+
+---
+
+### 2.5 Deterministic strategy hooks (Phase A–E aware)
+Strategy hypotheses are conditioned on Phase context:
 
 - **Phase A contexts**: discovery or structural setups, proto-range detection.
 - **Phase B contexts**: mean-reversion, liquidity sweep reversion, midline magnet trades.
+- **Phase C contexts**: sweep-reversion confirmation or trap detection.
+- **Phase D contexts**: breakout continuation with acceptance/retest filters.
+- **Phase E contexts**: trend continuation and regime persistence logic.
 
 **Rule**: the engine lane only routes based on `dr_phase` and related windows fields. It does not embed paradigm-specific logic in the pipeline.
 
 ---
 
-### 2.5 Deterministic artifact locations (entries/exits/context)
+### 2.6 Deterministic artifact locations (entries/exits/context)
 Deterministic artifacts store **entry/exit timestamps, prices, and context** in specific, normalized places:
 
 **Hypotheses (candidate intent)**:
@@ -133,7 +155,20 @@ Deterministic artifacts store **entry/exit timestamps, prices, and context** in 
 
 ---
 
-## 3) Research/training lane pipeline (Phase A → Phase B)
+### 2.7 MarketState cube (canonical context)
+Strategies consume a canonical MarketState cube keyed by `(instrument, anchor_tf, anchor_ts)`:
+
+- Phase fields + evidence (`dr_*`, probe/reclaim/accept/retest/trend reason codes).
+- Microstructure fields (AggImb/OFI/intensity).
+- Jump/vol fields (RV/BV/JV + semivariance).
+- Impact fields (Kyle λ + regime).
+- Options context fields (ATM IV, skew, term slope, VRP, model-free implied variance if feasible).
+
+All MarketState outputs must carry policy identifiers (`phase_version`, `threshold_bundle_id`, `micro_policy_id`, `jump_policy_id`, `impact_policy_id`, `options_policy_id`) for reproducibility.
+
+---
+
+## 3) Research/training lane pipeline (Phase A → Phase E)
 
 The research lane consumes engine artifacts and trains/validates strategy logic without mutating the deterministic pipeline.
 
@@ -141,9 +176,9 @@ The research lane consumes engine artifacts and trains/validates strategy logic 
 1. **Collect training datasets**
    - Join engine artifacts (`windows`, `market_events`, `hypotheses`, `critic`, `trade_paths`).
 2. **Feature evaluation**
-   - Rank Phase A/B features and thresholds for stability.
+   - Rank Phase A–E features and thresholds for stability.
 3. **Candidate generation**
-   - GA/RFE generation of hypothesis templates conditioned on Phase A/B states.
+   - GA/RFE generation of hypothesis templates conditioned on Phase A–E states.
 4. **Parameter learning**
    - Bayes calibration of thresholds and critic weights.
 5. **Portfolio evaluation**
@@ -160,10 +195,11 @@ The research lane consumes engine artifacts and trains/validates strategy logic 
 
 ---
 
-### 3.3 Phase B research responsibilities
-- Evaluate Phase B label stability and drift risk across regimes.
+### 3.3 Phase B–E research responsibilities
+- Evaluate Phase B–E label stability and drift risk across regimes.
 - Train paradigm-specific hypothesis filters using `dr_phase`, `pd_index`, and counters.
-- Optimize range acceptance/rejection thresholds for Phase B transitions.
+- Optimize range acceptance/rejection thresholds for Phase C–E transitions.
+- Validate microstructure/jump/impact/option primitives against realized outcomes.
 
 ---
 
@@ -217,9 +253,9 @@ This section ties together how a strategy is **created**, **trained**, and **pro
 
 ## 6) Compliance checklist
 
-A Phase A/B strategy pipeline is compliant only if:
+A Phase A–E strategy pipeline is compliant only if:
 
-- Phase A events and Phase B labels are deterministic and reproducible.
+- Phase A events and Phase B–E labels are deterministic and reproducible.
 - Event stream can explain every Phase transition.
 - `data/windows` contains complete `dr_*` fields (non-null where required).
 - Downstream steps consume `dr_*` fields and do not recompute them.
