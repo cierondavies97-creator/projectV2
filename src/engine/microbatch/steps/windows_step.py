@@ -9,6 +9,7 @@ from engine.core.config_models import ClusterPlan, build_cluster_plan, load_reta
 from engine.core.schema import WINDOWS_SCHEMA
 from engine.core.timegrid import build_anchor_grid, validate_anchor_grid
 from engine.data.windows import write_windows_for_instrument_tf_day
+from engine.features.market_structure.dealing_range.state_machine import fold_state_machine
 from engine.microbatch.steps.contract_guard import ContractWrite, assert_contract_alignment
 from engine.microbatch.types import BatchState
 from engine.research.snapshots import load_snapshot_manifest
@@ -251,6 +252,43 @@ def _zones_context_from_zones_state(zones_state: pl.DataFrame) -> pl.DataFrame:
     return zs
 
 
+def _validate_dr_outputs(windows: pl.DataFrame) -> None:
+    required = [
+        "dr_id",
+        "dr_low",
+        "dr_high",
+        "dr_mid",
+        "dr_width",
+        "dr_width_atr",
+        "dr_age_bars",
+        "dr_start_ts",
+        "dr_last_update_ts",
+        "dr_reason_code",
+    ]
+
+    if windows.is_empty() or "dr_phase" not in windows.columns:
+        return
+
+    dr_rows = windows.filter(pl.col("dr_phase").is_not_null())
+    if dr_rows.is_empty():
+        return
+
+    missing_cols = [c for c in required if c in dr_rows.columns]
+    if not missing_cols:
+        return
+
+    null_any = pl.any_horizontal([pl.col(c).is_null() for c in missing_cols]).alias("_dr_missing")
+    bad = dr_rows.filter(null_any)
+    if bad.is_empty():
+        return
+
+    sample = bad.select(["instrument", "anchor_tf", "anchor_ts", "dr_phase", *missing_cols]).head(5)
+    raise ValueError(
+        "windows_step: dealing range validation failed; dr_phase present but required fields are null. "
+        f"bad_rows={bad.height} sample={sample.to_dicts()}"
+    )
+
+
 def run(state: BatchState) -> BatchState:
     assert_contract_alignment(
         step_name="windows_step",
@@ -295,8 +333,14 @@ def run(state: BatchState) -> BatchState:
     if zs_bar is not None and not zs_bar.is_empty():
         windows = windows.join(zs_bar, on=["instrument", "anchor_tf", "anchor_ts"], how="left")
 
+    dr_frame = fold_state_machine(windows, candles)
+    if dr_frame is not None and not dr_frame.is_empty():
+        windows = windows.join(dr_frame, on=["instrument", "anchor_tf", "anchor_ts"], how="left")
+
     # Stamp audit dt (not a partition dependency, but useful to keep in-row).
     windows = windows.with_columns(pl.lit(td).cast(pl.Date).alias("dt"))
+
+    _validate_dr_outputs(windows)
 
     # Align to schema without fabricating values.
     windows = _align_to_windows_schema(windows)
