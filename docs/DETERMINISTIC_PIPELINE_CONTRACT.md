@@ -93,7 +93,7 @@ Every deterministic artifact must include the identity model:
 
 ---
 
-## 5) Canonical step order (engine lane)
+## 4) Canonical step order (engine lane)
 
 The deterministic pipeline runs the following ordered steps. **No paradigm may reorder or bypass steps.**
 
