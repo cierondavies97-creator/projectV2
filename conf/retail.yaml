@@ -80,6 +80,53 @@ policies:
   impact_policy_id: "impact_default_v1"
   options_policy_id: "options_default_v1"
 
+thresholds:
+  dealing_range_state:
+    dealing_range_lookback_bars: 100
+    min_range_bars: 20
+    width_min_ticks: 8
+    width_min_atr_mult: 0.8
+    test_band_ticks: 4
+    test_band_atr_mult: 0.25
+    p_inside_min: 0.6
+    break_fail_bars: 3
+    accept_bars_min: 3
+    spring_penetration_ticks: 6
+    spring_penetration_atr_mult: 0.4
+    reclaim_bars_max: 3
+    reclaim_ticks: 4
+    reclaim_atr_mult: 0.25
+    trend_distance_atr: 1.5
+    trend_width_mult: 1.0
+    trend_bars_min: 5
+    eq_level_ticks_max: 3
+
+  microstructure_flow:
+    micro_flow_window_bars: 10
+    micro_imbalance_clip_abs: 0.95
+    micro_intensity_window_secs: 300
+    micro_ofi_method: "trade_imbalance"
+
+  jump_variation:
+    jump_base_tf: "M1"
+    jump_window_bars: 30
+    jump_clip_abs: 8.0
+
+  impact_lambda:
+    impact_window_bars: 50
+    impact_lambda_clip_abs: 10.0
+    impact_regime_edges_json: "[0.1, 0.25, 0.5, 1.0]"
+
+  options_context:
+    options_source_chain: "default"
+    options_iv_solver: "brent"
+    options_strike_bucket_method: "delta"
+    options_rr_delta: 0.25
+    options_bf_delta: 0.25
+    options_term_near_days: 30
+    options_term_far_days: 90
+    options_mf_strike_spread_max: 0.05
+
 paths:
   data_root: "data"
   sandbox_root: "sandbox_data"
