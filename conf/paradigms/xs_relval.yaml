@@ -1,0 +1,16 @@
+paradigm_id: "xs_relval"
+enabled: false
+maturity: "stub"
+description: "Cross-sectional relative value paradigm (config stub)."
+
+default_principle_id: "xs_relval_default"
+
+feature_families:
+  - "xs_relval"
+  - "stat_ts"
+  - "ta_vol"
+  - "microstructure_flow"
+  - "jump_variation"
+  - "impact_lambda"
+  - "dealing_range_state"
+  - "options_context"

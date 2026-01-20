@@ -71,6 +71,15 @@ macro:
     # and fall back to pass-through rather than crashing.
     require_macro_column: false
 
+policies:
+  # Versioned identifiers for deterministic lane outputs (auditability).
+  phase_version: "phase_v1"
+  threshold_bundle_id: "thresholds_default_v1"
+  micro_policy_id: "micro_default_v1"
+  jump_policy_id: "jump_default_v1"
+  impact_policy_id: "impact_default_v1"
+  options_policy_id: "options_default_v1"
+
 paths:
   data_root: "data"
   sandbox_root: "sandbox_data"

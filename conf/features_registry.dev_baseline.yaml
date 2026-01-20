@@ -15,3 +15,31 @@
       stat_ts_vol_zscore: {dtype: float64}
       stat_ts_return_zscore: {dtype: float64}
       stat_ts_range_zscore: {dtype: float64}
+
+  microstructure_flow:
+    description: "Microstructure flow proxies (AggImb/OFI/Intensity)."
+    keys: ["instrument", "anchor_tf", "ts"]
+    columns:
+      agg_imbalance: {dtype: float64}
+      ofi: {dtype: float64}
+      intensity: {dtype: float64}
+      micro_policy_id: {dtype: string}
+
+  jump_variation:
+    description: "RV/BV/JV and semivariances (dev baseline)."
+    keys: ["instrument", "anchor_tf", "ts"]
+    columns:
+      rv: {dtype: float64}
+      bv: {dtype: float64}
+      jv: {dtype: float64}
+      rs_pos: {dtype: float64}
+      rs_neg: {dtype: float64}
+      jump_policy_id: {dtype: string}
+
+  impact_lambda:
+    description: "Kyle lambda impact (dev baseline)."
+    keys: ["instrument", "anchor_tf", "ts"]
+    columns:
+      kyle_lambda: {dtype: float64}
+      impact_regime: {dtype: string}
+      impact_policy_id: {dtype: string}

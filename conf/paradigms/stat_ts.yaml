@@ -1,0 +1,16 @@
+paradigm_id: "stat_ts"
+enabled: false
+maturity: "stub"
+description: "Stat-TS paradigm (config stub)."
+
+default_principle_id: "stat_ts_default"
+
+feature_families:
+  - "stat_ts"
+  - "ta_vol"
+  - "vol_range"
+  - "microstructure_flow"
+  - "jump_variation"
+  - "impact_lambda"
+  - "dealing_range_state"
+  - "options_context"

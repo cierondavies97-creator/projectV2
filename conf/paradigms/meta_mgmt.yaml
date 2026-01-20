@@ -1,0 +1,15 @@
+paradigm_id: "meta_mgmt"
+enabled: false
+maturity: "stub"
+description: "Meta-management/portfolio paradigm (config stub)."
+
+default_principle_id: "meta_mgmt_default"
+
+feature_families:
+  - "stat_ts"
+  - "vol_range"
+  - "microstructure_flow"
+  - "jump_variation"
+  - "impact_lambda"
+  - "dealing_range_state"
+  - "options_context"
