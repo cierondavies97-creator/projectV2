@@ -1,5 +1,512 @@
 # projectV2
 
+## Scope (implementation-grade)
+This document provides a high-resolution, implementation-grade explanation of:
+
+- **Phases B–E** as a dealing-range / Wyckoff-style market-structure state machine implemented with explicit deterministic formulas, and
+- **Mathematical primitives** (OFI/aggression/intensity, RV/BV/JV, Kyle’s λ, Black-76 IV + Greeks, skew/term structure/VRP, model-free implied variance), including what they mean physically in **GC futures** and how to compute and use them.
+
+“Conceptual” means intent and meaning. “Physical” means what is happening in the order book and participant behavior.
+
+---
+
+## Part A — Phases B to E (conceptual + physical) with deterministic formulas
+
+### 0) A dealing range is a measurable object, not a story
+A dealing range is an interval \[dr_low, dr_high] over time where:
+
+- price spends a high fraction of time inside the interval,
+- both boundaries are repeatedly interacted with (“tests”),
+- attempts to leave are either rejected (reclaim) or eventually accepted (break + hold).
+
+**Physical reality in GC futures**
+
+Liquidity pools form at obvious reference prices:
+
+- prior highs/lows, equal highs/lows, round numbers, VWAP bands, consolidation edges.
+
+Many orders are resting limit orders around these pools.
+
+Many other orders are stop orders beyond them (triggered when those pools break).
+
+“Phases” label how this auction evolves from balance to probe to acceptance to a new regime.
+
+**Engineering implication**
+
+You must define phases from observable evidence (bars + optional MBO aggregates) using explicit deterministic criteria. No implicit pattern matching. Every transition must have a reason code backed by measurable fields.
+
+### Deterministic building blocks (used by all phases)
+
+Assume OHLCV at anchor TF t ∈ {M15, H1}:
+O_t, H_t, L_t, C_t, V_t, and atr_t computed on the same TF.
+
+Define range geometry:
+
+- W_t = dr_high_t − dr_low_t
+- dr_mid_t = (dr_high_t + dr_low_t) / 2
+- dr_width_atr_t = W_t / (atr_t + ϵ)
+
+Define volatility-scaled bands (all deterministic):
+
+- test_band_t = max(test_ticks · tick_size, test_atr_mult · atr_t)
+- probe_min_t = max(probe_ticks · tick_size, probe_atr_mult · atr_t)
+- reclaim_band_t = max(reclaim_ticks · tick_size, reclaim_atr_mult · atr_t)
+- accept_dist_t = max(accept_ticks · tick_size, accept_atr_mult · atr_t)
+- trend_dist_t = max(trend_atr_mult · atr_t, trend_width_mult · W_t)
+
+Define core flags:
+
+- inside_t = 1\[dr_low_t ≤ C_t ≤ dr_high_t]
+- inside_ratio_t = (1 / L) · ∑_{i=t−L+1}^t inside_i
+
+Boundary tests:
+
+- test_high_t = 1\[H_t ≥ dr_high_t − test_band_t]
+- test_low_t = 1\[L_t ≤ dr_low_t + test_band_t]
+- tests_t = ∑_{i=t−L+1}^t (test_high_i + test_low_i)
+
+Probe distances:
+
+- pierce_low_t = max(0, dr_low_t − L_t)
+- pierce_high_t = max(0, H_t − dr_high_t)
+- probe_low_t = 1\[pierce_low_t ≥ probe_min_t]
+- probe_high_t = 1\[pierce_high_t ≥ probe_min_t]
+
+Reclaim:
+
+- reclaim_from_low_t = 1\[C_t ≥ dr_low_t + reclaim_band_t]
+- reclaim_from_high_t = 1\[C_t ≤ dr_high_t − reclaim_band_t]
+
+Acceptance (distance + persistence):
+
+- outside_up_t = 1\[C_t ≥ dr_high_t + accept_dist_t]
+- outside_dn_t = 1\[C_t ≤ dr_low_t − accept_dist_t]
+
+Consecutive run counters (deterministic recurrence):
+
+- outside_up_run_t = (outside_up_t ? outside_up_run_{t−1} + 1 : 0)
+- outside_dn_run_t = (outside_dn_t ? outside_dn_run_{t−1} + 1 : 0)
+
+Acceptance flags:
+
+- accept_up_t = 1\[outside_up_run_t ≥ accept_bars_min]
+- accept_dn_t = 1\[outside_dn_run_t ≥ accept_bars_min]
+
+Trend establishment:
+
+- dist_mid_t = |C_t − dr_mid_t|
+- trend_far_t = 1\[dist_mid_t ≥ trend_dist_t]
+- trend_run_t = (trend_far_t ? trend_run_{t−1} + 1 : 0)
+- reenter_t = 1\[dr_low_t ≤ C_t ≤ dr_high_t]
+
+These are the only “physics-free” mechanics you need. Everything else is a state machine around them.
+
+---
+
+### Phase B — Range development / two-sided auction (“building cause”)
+**Conceptual definition**
+
+Phase B is when the market is accepting prices inside a bounded interval and repeatedly discovering liquidity at both extremes. It is where the range matures.
+
+**Physical reality (GC)**
+
+- Two-sided trade: buyers and sellers both participate.
+- Liquidity providers replenish near boundaries.
+- Larger participants can accumulate/distribute without moving price too far.
+- Near boundaries you typically see thickening liquidity and failed pokes.
+
+**Deterministic B condition**
+
+Label/hold Phase B when all are true:
+
+- dr_width_atr_t ≥ width_min_atr
+- inside_ratio_t ≥ p_inside_min
+- tests_t ≥ tests_min
+- and not already in acceptance/trend regimes (D/E)
+
+**Typical B evidence fields written to windows**
+
+- inside_ratio_L, tests_L, dr_width_atr, test_high_count_L, test_low_count_L
+
+**Failure modes**
+
+- Labeling B too early (low tests, low inside ratio).
+- Letting B persist through true acceptance (acceptance triggers must move you to D/E).
+
+---
+
+### Phase C — Liquidity probe + verification (“spring / upthrust”)
+**Conceptual definition**
+
+Phase C is the critical “truth moment” where the market runs liquidity beyond a boundary and reveals whether the excursion was:
+
+- a trap/stop-run that gets rejected (reclaim), or
+- the start of a true break (acceptance).
+
+**Physical reality (GC)**
+
+Spring (below dr_low):
+
+- stops trigger aggressive selling,
+- that selling provides liquidity for absorption,
+- selling exhausts, price reclaims inside.
+
+Upthrust (above dr_high):
+
+- stops + breakout buys get absorbed,
+- price falls back into the range.
+
+**Deterministic Phase C sequence (sub-states)**
+
+Enter CANDIDATE from B when:
+
+- probe_low_t = 1 (spring candidate) OR
+- probe_high_t = 1 (upthrust candidate)
+
+Store:
+
+- c_side ∈ {LOW, HIGH}, c_start_ts, pierce_dist, probe_min
+
+CONFIRMED if within reclaim_bars_max bars after c_start_ts:
+
+- for LOW: reclaim_from_low_t = 1
+- for HIGH: reclaim_from_high_t = 1
+
+FAILED if acceptance (Phase D) triggers before reclaim (accept_up or accept_dn becomes true).
+
+**MBO evidence (optional confirmers)**
+
+To upgrade confidence (still deterministic), require at least one confirmer:
+
+- OFI sign flip,
+- aggression imbalance reversal,
+- intensity regime change near the probe.
+
+This yields two labels:
+
+- C_CONFIRMED (pure price confirmation)
+- C_CONFIRMED_STRONG (price + micro confirmer)
+
+**Why Phase C is necessary**
+
+Without C, you misclassify stop-runs and sweeps as breakouts and call false regime changes.
+
+---
+
+### Phase D — Acceptance + retest + directional dominance (“campaign begins”)
+**Conceptual definition**
+
+Phase D begins when price breaks from the range and is accepted outside it (break + hold), usually with follow-through and a successful retest.
+
+**Physical reality (GC)**
+
+- One side gains control (demand above high or supply below low).
+- Old boundary starts acting as support/resistance.
+- Trapped participants unwind; breakout traders enter; mean reversion traders exit.
+
+**Deterministic acceptance rule (enter D)**
+
+Enter Phase D when:
+
+- accept_up_t = 1 OR
+- accept_dn_t = 1
+
+Acceptance is explicitly:
+
+- outside by accept_dist, AND
+- persists for accept_bars_min consecutive bars.
+
+**Deterministic retest rule (stabilize D)**
+
+After first acceptance at t0, within retest_bars_max bars:
+
+- Up-break retest fails if any close returns below:
+  - dr_high_t0 − reclaim_band_t0
+- Down-break retest fails if any close returns above:
+  - dr_low_t0 + reclaim_band_t0
+
+Policy (versioned):
+
+- if retest fails: mark FAILED_BREAK and revert to B (same dr_id) or end the range and reinitialize.
+
+**MBO evidence (acceptance confirmation; optional)**
+
+- sustained aggression in breakout direction,
+- fewer immediate reversals,
+- reduced “defensive replenishment” from the old range side.
+
+**Operational note**
+
+This is where OFI and Kyle’s λ matter most; high-λ regimes imply higher cost and higher fragility of breakout continuation.
+
+---
+
+### Phase E — Trend / new regime (the final phase)
+**Conceptual definition**
+
+Phase E is not merely “still moving.” Phase E means the old range is no longer the right reference frame.
+
+**Physical reality (GC)**
+
+- Market reprices to a new equilibrium.
+- Liquidity migrates to new zones; the old range becomes historical structure.
+- Macro drivers, hedging demand, risk regime shifts, and vol repricing often participate.
+
+**Deterministic entry rule (enter E)**
+
+Enter Phase E when:
+
+- trend_run_t ≥ trend_bars_min (distance-from-mid persists), and
+- no re-entry for reentry_bars_max bars (or since acceptance, per your chosen policy).
+
+Where:
+
+- trend_far_t = 1\[|C_t − dr_mid_t| ≥ trend_dist_t]
+- trend_dist_t = max(trend_atr_mult · atr_t, trend_width_mult · W_t)
+- reenter_t = 1\[dr_low_t ≤ C_t ≤ dr_high_t]
+
+**How phases relate to “best deterministic logic”**
+
+The phase subsystem must output:
+
+- dr_phase (B/C/D/E),
+- dr_id, dr_low/high/mid, dr_width_atr,
+- and reason codes + evidence for every transition:
+  - probe side + pierce distance,
+  - reclaim margin + time-to-reclaim,
+  - acceptance distance + persistence count,
+  - retest pass/fail,
+  - trend distance + persistence + re-entry checks.
+
+This makes every label auditable and consistent across paradigms.
+
+---
+
+## Part B — Mathematical primitives (conceptual + physical)
+
+These primitives measure how the auction behaves (pressure, activity, jumps, impact, implied risk).
+
+### 1) OFI / Aggression Imbalance / Intensity (MBO)
+**1.1 Aggression imbalance (trade-sign imbalance)**
+
+Let V_W^+ be aggressive buy volume and V_W^- aggressive sell volume in window W:
+
+AggImb_W = (V_W^+ − V_W^−) / (V_W^+ + V_W^− + ϵ)
+
+**Physical meaning**
+
+- near +1: aggressive buying pressure,
+- near −1: aggressive selling pressure,
+- near 0: balanced auction (common in B).
+
+**Implementation**
+
+Use feed-provided aggressor side if reliable; else infer deterministically from mid/quote logic.
+
+**1.2 OFI (order flow imbalance)**
+
+OFI incorporates order book changes (liquidity consumption vs replenishment). Full L1 OFI requires reconstructing best bid/ask prices and queue sizes. If not reconstructed, use deterministic proxies from trade/add/cancel imbalances.
+
+**Physical meaning**
+
+- positive OFI supports higher prices,
+- negative OFI supports lower prices,
+- OFI flips are powerful Phase C confirmers.
+
+**1.3 Intensity (event rate / activity regime)**
+
+For window length Δt:
+
+λ_W = N_W / Δt
+
+and optionally separate by event types (trade/add/cancel).
+
+**Physical meaning**
+
+- C probes often show intensity spikes,
+- quiet consolidation shows low intensity,
+- cancel intensity near boundaries can indicate liquidity games/absorption.
+
+---
+
+### 2) Jump detection: RV/BV/JV (from S1/M1 returns)
+With intraday returns r_i:
+
+- Realized variance: RV = ∑_i r_i^2
+- Bipower variation: BV = μ_{1−2} ∑_i |r_i| |r_{i−1}|, μ_1 = 2/π
+- Jump variation: JV = max(RV − BV, 0)
+- Semivariances:
+  - RS^+ = ∑ r_i^2 1_{r_i>0}
+  - RS^- = ∑ r_i^2 1_{r_i<0}
+
+**Physical meaning**
+
+JV proxies discontinuities: news shocks, stop cascades, liquidity vacuums.
+
+JV spikes often coincide with Phase C probe mechanics; low relative JV often accompanies smoother continuation.
+
+---
+
+### 3) Kyle’s λ (impact regime + cost model)
+Estimate:
+
+Δp_i = λ q_i + ϵ_i
+
+where Δp_i is mid (or last) price change and q_i is signed volume.
+
+**Physical meaning**
+
+- high λ: thin liquidity, higher impact per unit flow,
+- low λ: deep liquidity, better absorption.
+
+**Cost proxy**
+
+impact_cost ≈ λ |Q|
+
+which is materially better than constant slippage and can be used to gate risk during D/E.
+
+---
+
+### 4) Options math: Black-76 IV inversion + Greeks
+Black-76 call:
+
+C = DF(T) (F N(d1) − K N(d2))
+
+d1 = [ln(F/K) + 0.5 σ^2 T] / (σ √T), d2 = d1 − σ √T
+
+IV inversion solves C(σ) − C_mkt = 0 via a bracketed deterministic solver (e.g., Brent).
+
+**Greeks (examples)**
+
+- Δ = DF(T) N(d1)
+- Vega = DF(T) F ϕ(d1) √T
+- Γ = DF(T) ϕ(d1) / (F σ √T)
+
+**Physical meaning**
+
+IV is a risk-neutral quoting parameter; its changes represent risk repricing.
+
+Greeks connect options positioning/hedging to futures flows (e.g., delta hedging).
+
+---
+
+### 5) Skew, term structure, VRP
+Risk reversal:
+
+- RR_25 = IV(c25) − IV(p25)
+
+Butterfly curvature proxy:
+
+- BF_25 = 0.5 (IV(c25) + IV(p25)) − IV(ATM)
+
+Term slope:
+
+- TS = IV(near) − IV(far)
+
+VRP proxy:
+
+- VRP ≈ σ_imp^2 − σ_real^2
+
+**Physical meaning**
+
+- skew measures demand for downside protection,
+- term structure reflects near-term event risk vs long-term uncertainty,
+- VRP is the premium for bearing convexity/jump risk (JV and λ contextualize whether selling vol is sensible).
+
+---
+
+### 6) Model-free implied variance (variance swap style)
+Discrete approximation:
+
+σ_MF^2 ≈ (2 / T) ∑_K (ΔK / K^2) · DF^{-1} · Q(K)
+
+with Q(K) as OTM option price (put for K < F, call for K > F).
+
+**Physical meaning**
+
+- replicates a log payoff using a strip of options,
+- captures the whole smile, not just ATM IV.
+
+**Engineering reality**
+
+- needs adequate strike coverage and robust quote filtering,
+- strike-selection and filtering must be versioned (policy artifact).
+
+---
+
+## Part C — How phases and formulas fit together (physical + logical)
+
+Phases describe where you are in the auction; formulas describe how the auction behaves.
+
+**Phase B confirmation**
+
+- inside_ratio_L high, tests_L high,
+- AggImb oscillates around 0,
+- λ stable/moderate, JV not dominant.
+
+**Phase C confirmation**
+
+- probe (pierce ≥ probe_min),
+- reclaim within reclaim_bars_max (close beyond reclaim_band),
+- intensity spike and OFI/AggImb flip often appear,
+- JV often spikes during the stop-run portion.
+
+**Phase D acceptance**
+
+- accept_dist + persistence (accept_bars_min),
+- retest holds (no close back through reclaim_band),
+- OFI/AggImb aligned; λ informs fragility and cost.
+
+**Phase E trend regime**
+
+- distance-from-mid ≥ trend_dist with persistence (trend_bars_min),
+- no re-entry for reentry_bars_max,
+- options term structure/skew/VRP often shift with the new regime.
+
+---
+
+## Part D — Practical implementation constraints
+
+**Time alignment**
+
+- Everything aligns to (instrument, anchor_tf, anchor_ts).
+- MBO features aggregate over (anchor_ts − Δ, anchor_ts] deterministically.
+- RV/BV/JV uses one authoritative base TF (S1 or M1), versioned.
+
+**Unit normalization**
+
+- tick size, contract multiplier, volume units must be normalized consistently.
+- options strikes and futures prices must match units and underlying mapping.
+
+**Roll / continuous series**
+
+- define roll method and ensure MBO + options map to the correct contract.
+- ensure F used in Black-76 matches the chain underlying at that time.
+
+**Versioning and audit**
+
+Every output should carry:
+
+- phase_version, threshold_bundle_id,
+- micro_policy_id, jump_policy_id, impact_policy_id, options_policy_id,
+so runs are reproducible and comparable.
+
+---
+
+## Part E — The next build artifact: MarketState cube
+
+Define a single canonical MarketState cube keyed by (instrument, anchor_tf, anchor_ts) containing:
+
+- B–E phase fields + evidence (dr_*, probe/reclaim/accept/trend reason codes),
+- microstructure fields (AggImb/OFI/intensity),
+- jump/vol fields (RV/BV/JV + semivariance),
+- impact fields (Kyle λ + regime),
+- options context fields (ATM IV, skew, term slope, VRP, model-free implied variance if feasible).
+
+This cube is what strategies consume. Everything else exists to generate it deterministically.
+
+If you provide the exact columns available in your options dataset (bid/ask/mid, strike, expiry, call/put, underlying mapping, rates/DF availability), I can specify the minimal schemas and bucketing rules so you avoid strike explosion while preserving skew/term/VRP fidelity.
+
 Conceptual definition (engine-grade)
 
 Phase B = “range development / cause-building.”
