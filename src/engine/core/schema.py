@@ -362,6 +362,23 @@ WINDOWS_COLUMNS: Dict[str, str] = {
     'vol_range_regime_confidence': 'double',
     'vol_range_regime_id': 'string',
     'vol_range_state': 'string',
+    'dr_id': 'string',
+    'dr_phase': 'string',
+    'dr_low': 'double',
+    'dr_high': 'double',
+    'dr_mid': 'double',
+    'dr_width': 'double',
+    'dr_width_atr': 'double',
+    'dr_age_bars': 'int',
+    'dr_start_ts': 'timestamp',
+    'dr_last_update_ts': 'timestamp',
+    'dr_reason_code': 'string',
+    'phase_version': 'string',
+    'threshold_bundle_id': 'string',
+    'micro_policy_id': 'string',
+    'jump_policy_id': 'string',
+    'impact_policy_id': 'string',
+    'options_policy_id': 'string',
 }
 
 WINDOWS_SCHEMA = TableSchema(

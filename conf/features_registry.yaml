@@ -536,6 +536,56 @@ pac_bar:
 
 
 
+dealing_range:
+  table: "data/windows"
+  enabled: true
+  maturity: "experimental"
+  description: "Deterministic dealing-range (Phases B-E) state machine outputs and audit fields."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - lookback_bars
+    - atr_window
+    - width_min_atr
+    - p_inside_min
+    - tests_min
+    - test_atr_mult
+    - probe_atr_mult
+    - reclaim_atr_mult
+    - accept_atr_mult
+    - accept_bars_min
+    - reclaim_bars_max
+    - trend_atr_mult
+    - trend_width_mult
+    - trend_bars_min
+    - reentry_bars_max
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    dr_id:              { role: feature, dtype: string }
+    dr_phase:           { role: feature, dtype: string }
+    dr_low:             { role: feature, dtype: double }
+    dr_high:            { role: feature, dtype: double }
+    dr_mid:             { role: feature, dtype: double }
+    dr_width:           { role: feature, dtype: double }
+    dr_width_atr:       { role: feature, dtype: double }
+    dr_age_bars:        { role: feature, dtype: int }
+    dr_start_ts:        { role: feature, dtype: timestamp }
+    dr_last_update_ts:  { role: feature, dtype: timestamp }
+    dr_reason_code:     { role: feature, dtype: string }
+
+    phase_version:         { role: feature, dtype: string }
+    threshold_bundle_id:   { role: feature, dtype: string }
+    micro_policy_id:       { role: feature, dtype: string }
+    jump_policy_id:        { role: feature, dtype: string }
+    impact_policy_id:      { role: feature, dtype: string }
+    options_policy_id:     { role: feature, dtype: string }
+
+
+
 stat_ts:
   table: "data/windows"
   enabled: true
