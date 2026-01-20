@@ -1,0 +1,16 @@
+paradigm_id: "vol_range"
+enabled: false
+maturity: "stub"
+description: "Vol/range paradigm (config stub)."
+
+default_principle_id: "vol_range_default"
+
+feature_families:
+  - "vol_range"
+  - "ta_vol"
+  - "stat_ts"
+  - "microstructure_flow"
+  - "jump_variation"
+  - "impact_lambda"
+  - "dealing_range_state"
+  - "options_context"

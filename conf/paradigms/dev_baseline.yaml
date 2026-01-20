@@ -13,6 +13,11 @@ windows:
   feature_families:
     - ict_struct
     - stat_ts
+    - microstructure_flow
+    - jump_variation
+    - impact_lambda
+    - options_context
+    - dealing_range_state
 
   selection_rule: ict_swing_or_vol
   selection_params:

@@ -1,0 +1,9 @@
+schema_version: 1
+generated_by: manual_seed
+policies:
+  phase_version: "phase_v1"
+  threshold_bundle_id: "thresholds_default_v1"
+  micro_policy_id: "micro_default_v1"
+  jump_policy_id: "jump_default_v1"
+  impact_policy_id: "impact_default_v1"
+  options_policy_id: "options_default_v1"

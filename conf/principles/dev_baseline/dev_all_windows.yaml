@@ -1,6 +1,23 @@
 paradigm_id: "dev_baseline"
 principle_id: "dev_all_windows"
 
+policy_ids:
+  phase_version: "phase_v1"
+  threshold_bundle_id: "thresholds_default_v1"
+  micro_policy_id: "micro_default_v1"
+  jump_policy_id: "jump_default_v1"
+  impact_policy_id: "impact_default_v1"
+  options_policy_id: "options_default_v1"
+
+hypotheses:
+  required_features:
+    - "ict_struct"
+    - "stat_ts"
+    - "microstructure_flow"
+    - "jump_variation"
+  filters:
+    dr_phase_allowlist: ["B", "C", "D", "E"]
+
 pretrade:
   macro_blackout:
     enabled: true

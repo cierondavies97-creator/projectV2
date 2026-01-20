@@ -11,6 +11,11 @@ feature_families:
   - "stat_ts"
   - "macro_calendar"
   - "consolidation_bar"
+  - "microstructure_flow"
+  - "jump_variation"
+  - "impact_lambda"
+  - "options_context"
+  - "dealing_range_state"
 
 critic:
   impl: "ict_basic"
