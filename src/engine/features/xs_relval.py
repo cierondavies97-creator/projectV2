@@ -1,14 +1,192 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 
+import numpy as np
 import polars as pl
 
 from engine.features import FeatureBuildContext
 from engine.features._shared import conform_to_registry, safe_div
 
 log = logging.getLogger(__name__)
+
+
+def _corrcoef_pair(x: np.ndarray, y: np.ndarray, min_periods: int) -> float | None:
+    mask = np.isfinite(x) & np.isfinite(y)
+    if mask.sum() < min_periods:
+        return None
+    xv = x[mask]
+    yv = y[mask]
+    if xv.size < 2:
+        return None
+    x_std = xv.std()
+    y_std = yv.std()
+    if x_std == 0 or y_std == 0:
+        return None
+    return float(np.corrcoef(xv, yv)[0, 1])
+
+
+def _compute_primary_peer_metrics(
+    wide_returns: pl.DataFrame,
+    window: int,
+    min_periods: int,
+    method: str,
+    min_corr: float,
+) -> pl.DataFrame:
+    if wide_returns is None or wide_returns.is_empty():
+        return pl.DataFrame(
+            {
+                "instrument": pl.Series([], dtype=pl.Utf8),
+                "ts": pl.Series([], dtype=pl.Datetime("us")),
+            }
+        )
+
+    instruments = [col for col in wide_returns.columns if col != "ts"]
+    if not instruments:
+        return pl.DataFrame(
+            {
+                "instrument": pl.Series([], dtype=pl.Utf8),
+                "ts": pl.Series([], dtype=pl.Datetime("us")),
+            }
+        )
+
+    ts_list = wide_returns.get_column("ts").to_list()
+    arr = wide_returns.select(instruments).to_numpy()
+    rows: list[dict[str, object]] = []
+    n = len(instruments)
+
+    for idx, ts in enumerate(ts_list):
+        start = max(0, idx - window + 1)
+        window_arr = arr[start : idx + 1]
+        if window_arr.shape[0] < min_periods:
+            for inst in instruments:
+                rows.append(
+                    {
+                        "instrument": inst,
+                        "ts": ts,
+                        "xs_relval_primary_peer": None,
+                        "xs_relval_primary_peer_corr": None,
+                        "xs_relval_primary_peer_beta": None,
+                        "xs_relval_coint_pvalue": None,
+                        "xs_relval_half_life_bars": None,
+                        "xs_relval_residual": None,
+                        "xs_relval_residual_z": None,
+                    }
+                )
+            continue
+
+        for j, inst in enumerate(instruments):
+            x = window_arr[:, j]
+            if not np.isfinite(x).any():
+                rows.append(
+                    {
+                        "instrument": inst,
+                        "ts": ts,
+                        "xs_relval_primary_peer": None,
+                        "xs_relval_primary_peer_corr": None,
+                        "xs_relval_primary_peer_beta": None,
+                        "xs_relval_coint_pvalue": None,
+                        "xs_relval_half_life_bars": None,
+                        "xs_relval_residual": None,
+                        "xs_relval_residual_z": None,
+                    }
+                )
+                continue
+
+            best_peer = None
+            best_corr = None
+            best_beta = None
+            best_metric = None
+            best_resid = None
+
+            for k, peer in enumerate(instruments):
+                if k == j:
+                    continue
+                y = window_arr[:, k]
+                corr_val = _corrcoef_pair(x, y, min_periods=min_periods)
+                if corr_val is None:
+                    continue
+                mask = np.isfinite(x) & np.isfinite(y)
+                xv = x[mask]
+                yv = y[mask]
+                y_var = yv.var()
+                beta = float(np.cov(xv, yv)[0, 1] / y_var) if y_var > 0 else None
+                resid = xv - (beta * yv) if beta is not None else None
+                if method == "min_resid_var":
+                    metric = float(resid.var()) if resid is not None else None
+                    if metric is None:
+                        continue
+                    if best_metric is None or metric < best_metric:
+                        best_metric = metric
+                        best_peer = peer
+                        best_corr = corr_val
+                        best_beta = beta
+                        best_resid = resid
+                else:
+                    metric = abs(corr_val)
+                    if best_metric is None or metric > best_metric:
+                        best_metric = metric
+                        best_peer = peer
+                        best_corr = corr_val
+                        best_beta = beta
+                        best_resid = resid
+
+            if best_peer is None or best_corr is None or abs(best_corr) < min_corr:
+                rows.append(
+                    {
+                        "instrument": inst,
+                        "ts": ts,
+                        "xs_relval_primary_peer": None,
+                        "xs_relval_primary_peer_corr": None,
+                        "xs_relval_primary_peer_beta": None,
+                        "xs_relval_coint_pvalue": None,
+                        "xs_relval_half_life_bars": None,
+                        "xs_relval_residual": None,
+                        "xs_relval_residual_z": None,
+                    }
+                )
+                continue
+
+            residual_series = best_resid
+            residual_z = None
+            half_life = None
+            if residual_series is not None and residual_series.size >= 3:
+                resid_mean = residual_series.mean()
+                resid_std = residual_series.std()
+                if resid_std > 0 and np.isfinite(x[-1]):
+                    current_mask = np.isfinite(x) & np.isfinite(window_arr[:, instruments.index(best_peer)])
+                    if current_mask.any():
+                        current_x = x[current_mask][-1]
+                        current_y = window_arr[:, instruments.index(best_peer)][current_mask][-1]
+                        residual_z = float(((current_x - best_beta * current_y) - resid_mean) / resid_std)
+
+                resid_lag = residual_series[:-1]
+                resid_next = residual_series[1:]
+                phi = _corrcoef_pair(resid_lag, resid_next, min_periods=2)
+                if phi is not None and 0 < phi < 1:
+                    half_life = int(round(-math.log(2) / math.log(phi)))
+
+            coint_pvalue = None
+            if best_corr is not None:
+                coint_pvalue = float((1 - min(1.0, abs(best_corr))))
+
+            rows.append(
+                {
+                    "instrument": inst,
+                    "ts": ts,
+                    "xs_relval_primary_peer": best_peer,
+                    "xs_relval_primary_peer_corr": float(best_corr),
+                    "xs_relval_primary_peer_beta": float(best_beta) if best_beta is not None else None,
+                    "xs_relval_coint_pvalue": coint_pvalue,
+                    "xs_relval_half_life_bars": half_life,
+                    "xs_relval_residual": float(residual_series[-1]) if residual_series is not None else None,
+                    "xs_relval_residual_z": residual_z,
+                }
+            )
+
+    return pl.DataFrame(rows)
 
 
 def _empty_keyed_frame(registry_entry: Mapping[str, object] | None) -> pl.DataFrame:
@@ -93,6 +271,9 @@ def build_feature_frame(
     mild_cut = float(cfg.get("xs_relval_bucket_mild_cut", 1.5))
     strong_cut = float(cfg.get("xs_relval_bucket_strong_cut", 2.5))
     peer_set_used = str(cfg.get("xs_relval_peer_set_id", "cluster_peers"))
+    primary_peer_method = str(cfg.get("xs_relval_primary_peer_method", "max_abs_corr"))
+    primary_peer_min_corr = float(cfg.get("xs_relval_primary_peer_min_corr", 0.50))
+    coint_window = max(10, int(cfg.get("xs_relval_coint_window_bars", 500)))
 
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
@@ -112,6 +293,19 @@ def build_feature_frame(
 
     c = c.sort(["instrument", "ts"]).with_columns(
         pl.col("close").pct_change().over("instrument").alias("_ret"),
+    )
+
+    wide = (
+        c.select("ts", "instrument", "_ret")
+        .sort("ts")
+        .pivot(values="_ret", index="ts", columns="instrument")
+    )
+    peer_metrics = _compute_primary_peer_metrics(
+        wide_returns=wide,
+        window=coint_window,
+        min_periods=max(5, coint_window // 3),
+        method=primary_peer_method,
+        min_corr=primary_peer_min_corr,
     )
 
     by_ts = ["ts"]
@@ -135,6 +329,11 @@ def build_feature_frame(
     momo_rank = safe_div(pl.col("_momo").rank("average").over(by_ts) - 1, count - 1, default=0.0).alias("xs_relval_momo_rank")
 
     out = c.with_columns(spread_level, momo, carry_rank, momo_rank)
+    out = out.join(peer_metrics, on=["instrument", "ts"], how="left")
+    if spread_type == "hedged_residual":
+        out = out.with_columns(
+            pl.col("xs_relval_residual").alias("xs_relval_spread_level")
+        )
     spread_mean = (
         pl.col("xs_relval_spread_level")
         .rolling_mean(window_size=z_window, min_periods=max(3, z_window // 3))
@@ -148,7 +347,7 @@ def build_feature_frame(
     spread_z = safe_div(
         pl.col("xs_relval_spread_level") - spread_mean,
         spread_std,
-        default=0.0,
+        default=None,
     ).clip(-z_clip, z_clip).alias("xs_relval_spread_zscore")
     out = out.with_columns(spread_z)
 
@@ -175,13 +374,21 @@ def build_feature_frame(
         .alias("xs_relval_signal_strength"),
         pl.count().over(by_ts).cast(pl.Int64).alias("xs_relval_peer_count"),
         pl.lit(peer_set_used).alias("xs_relval_peer_set_used"),
-        pl.lit(None).cast(pl.Utf8).alias("xs_relval_primary_peer"),
-        pl.lit(None).cast(pl.Float64).alias("xs_relval_primary_peer_corr"),
-        pl.lit(None).cast(pl.Float64).alias("xs_relval_primary_peer_beta"),
-        pl.lit("neutral").alias("xs_relval_primary_peer_role"),
-        pl.lit(None).cast(pl.Float64).alias("xs_relval_coint_pvalue"),
-        pl.lit(None).cast(pl.Int64).alias("xs_relval_half_life_bars"),
-        pl.lit(None).cast(pl.Float64).alias("xs_relval_residual_z"),
+        pl.col("xs_relval_primary_peer").cast(pl.Utf8),
+        pl.col("xs_relval_primary_peer_corr").cast(pl.Float64),
+        pl.col("xs_relval_primary_peer_beta").cast(pl.Float64),
+        pl.when(pl.col("xs_relval_spread_zscore") <= pl.lit(-mild_cut))
+        .then(pl.lit("buy_this"))
+        .when(pl.col("xs_relval_spread_zscore") >= pl.lit(mild_cut))
+        .then(pl.lit("sell_this"))
+        .otherwise(pl.lit("neutral"))
+        .alias("xs_relval_primary_peer_role"),
+        pl.col("xs_relval_coint_pvalue").cast(pl.Float64),
+        pl.col("xs_relval_half_life_bars").cast(pl.Int64),
+        pl.when(pl.lit(spread_type) == pl.lit("hedged_residual"))
+        .then(pl.col("xs_relval_residual_z"))
+        .otherwise(pl.lit(None).cast(pl.Float64))
+        .alias("xs_relval_residual_z"),
     ).select(
         "instrument",
         "ts",

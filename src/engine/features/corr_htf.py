@@ -1,7 +1,10 @@
+
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+
+import numpy as np
 
 import polars as pl
 
@@ -9,6 +12,106 @@ from engine.features import FeatureBuildContext
 from engine.features._shared import conform_to_registry, safe_div
 
 log = logging.getLogger(__name__)
+
+
+def _corrcoef_pair(x: np.ndarray, y: np.ndarray, min_periods: int) -> float | None:
+    mask = np.isfinite(x) & np.isfinite(y)
+    if mask.sum() < min_periods:
+        return None
+    xv = x[mask]
+    yv = y[mask]
+    if xv.size < 2:
+        return None
+    x_std = xv.std()
+    y_std = yv.std()
+    if x_std == 0 or y_std == 0:
+        return None
+    return float(np.corrcoef(xv, yv)[0, 1])
+
+
+def _compute_peer_refs(
+    wide_returns: pl.DataFrame,
+    window: int,
+    min_periods: int,
+    max_refs: int,
+    min_abs: float,
+) -> pl.DataFrame:
+    if wide_returns is None or wide_returns.is_empty():
+        return pl.DataFrame(
+            {
+                "instrument": pl.Series([], dtype=pl.Utf8),
+                "ts": pl.Series([], dtype=pl.Datetime("us")),
+            }
+        )
+
+    instruments = [col for col in wide_returns.columns if col != "ts"]
+    if not instruments:
+        return pl.DataFrame(
+            {
+                "instrument": pl.Series([], dtype=pl.Utf8),
+                "ts": pl.Series([], dtype=pl.Datetime("us")),
+            }
+        )
+
+    ts_list = wide_returns.get_column("ts").to_list()
+    arr = wide_returns.select(instruments).to_numpy()
+    rows: list[dict[str, object]] = []
+    n = len(instruments)
+    max_refs = max(0, max_refs)
+
+    for idx, ts in enumerate(ts_list):
+        start = max(0, idx - window + 1)
+        window_arr = arr[start : idx + 1]
+        if window_arr.shape[0] < min_periods:
+            for inst in instruments:
+                rows.append(
+                    {
+                        "instrument": inst,
+                        "ts": ts,
+                        "corr_htf_ref2_id": None,
+                        "corr_htf_ref2": None,
+                        "corr_htf_ref3_id": None,
+                        "corr_htf_ref3": None,
+                    }
+                )
+            continue
+
+        corr_matrix = np.full((n, n), np.nan, dtype=float)
+        for j in range(n):
+            x = window_arr[:, j]
+            for k in range(j, n):
+                y = window_arr[:, k]
+                corr_val = _corrcoef_pair(x, y, min_periods=min_periods)
+                if corr_val is None:
+                    continue
+                corr_matrix[j, k] = corr_val
+                corr_matrix[k, j] = corr_val
+
+        for j, inst in enumerate(instruments):
+            peers: list[tuple[str, float]] = []
+            for k, peer in enumerate(instruments):
+                if k == j:
+                    continue
+                corr_val = corr_matrix[j, k]
+                if np.isnan(corr_val) or abs(corr_val) < min_abs:
+                    continue
+                peers.append((peer, float(corr_val)))
+            peers.sort(key=lambda item: (-abs(item[1]), item[0]))
+            top = peers[:max_refs]
+            ref2_id, ref2_val = (top[0][0], top[0][1]) if len(top) > 0 else (None, None)
+            ref3_id, ref3_val = (top[1][0], top[1][1]) if len(top) > 1 else (None, None)
+            rows.append(
+                {
+                    "instrument": inst,
+                    "ts": ts,
+                    "corr_htf_ref2_id": ref2_id,
+                    "corr_htf_ref2": ref2_val,
+                    "corr_htf_ref3_id": ref3_id,
+                    "corr_htf_ref3": ref3_val,
+                }
+            )
+
+    return pl.DataFrame(rows)
 
 
 def _empty_keyed_frame(registry_entry: Mapping[str, object] | None) -> pl.DataFrame:
@@ -84,6 +187,9 @@ def build_feature_frame(
     window = max(5, int(cfg.get("corr_htf_window_bars", 500)))
     min_periods = int(cfg.get("corr_htf_min_periods", 100))
     clip_abs = float(cfg.get("corr_htf_clip_abs", 0.999))
+    cluster_stability_cut = float(cfg.get("corr_htf_cluster_stability_cut", 0.70))
+    ref_slots = 3
+    topk_min_abs = 0.5
     c = candles.select(
         pl.col("instrument").cast(pl.Utf8),
         pl.col("ts").cast(pl.Datetime("us")),
@@ -111,12 +217,22 @@ def build_feature_frame(
     corr_raw = safe_div(mean_prod - (mean_ret * mean_mkt), std_ret * std_mkt, default=None)
     corr = corr_raw.clip(-clip_abs, clip_abs).alias("corr_htf_ref1")
 
-    out = c.with_columns(corr).with_columns(
+    out = c.with_columns(corr)
+    wide = (
+        out.select("ts", "instrument", "_ret")
+        .sort("ts")
+        .pivot(values="_ret", index="ts", columns="instrument")
+    )
+    peer_refs = _compute_peer_refs(
+        wide_returns=wide,
+        window=window,
+        min_periods=min_periods,
+        max_refs=max(0, ref_slots - 1),
+        min_abs=topk_min_abs,
+    )
+    out = out.join(peer_refs, on=["instrument", "ts"], how="left")
+    out = out.with_columns(
         pl.lit("MARKET").alias("corr_htf_ref1_id"),
-        pl.lit(None).cast(pl.Utf8).alias("corr_htf_ref2_id"),
-        pl.lit(None).cast(pl.Float64).alias("corr_htf_ref2"),
-        pl.lit(None).cast(pl.Utf8).alias("corr_htf_ref3_id"),
-        pl.lit(None).cast(pl.Float64).alias("corr_htf_ref3"),
         pl.when(pl.col("corr_htf_ref1").is_null())
         .then(pl.lit(None).cast(pl.Utf8))
         .when(pl.col("corr_htf_ref1").abs() < pl.lit(0.2))
@@ -126,9 +242,25 @@ def build_feature_frame(
         .otherwise(pl.lit("divergent"))
         .alias("htf_corr_regime"),
         pl.col("corr_htf_ref1").abs().alias("htf_corr_confidence"),
-        pl.lit(None).cast(pl.Utf8).alias("corr_cluster_id_htf"),
-        pl.lit(None).cast(pl.Float64).alias("corr_cluster_confidence_htf"),
-        pl.lit(None).cast(pl.Float64).alias("corr_cluster_stability_htf"),
+    )
+    corr_std = (
+        pl.col("corr_htf_ref1")
+        .rolling_std(window_size=window, min_periods=min_periods)
+        .over("instrument")
+        .alias("_corr_htf_std")
+    )
+    out = out.with_columns(corr_std).with_columns(
+        pl.when(pl.col("htf_corr_regime") == pl.lit("aligned"))
+        .then(pl.lit("cluster_pos"))
+        .when(pl.col("htf_corr_regime") == pl.lit("divergent"))
+        .then(pl.lit("cluster_neg"))
+        .otherwise(pl.lit("cluster_neutral"))
+        .alias("corr_cluster_id_htf"),
+        pl.col("htf_corr_confidence").alias("corr_cluster_confidence_htf"),
+        pl.when(pl.lit(cluster_stability_cut) > 0)
+        .then((1 - (pl.col("_corr_htf_std") / pl.lit(cluster_stability_cut))).clip(0.0, 1.0))
+        .otherwise(pl.lit(None).cast(pl.Float64))
+        .alias("corr_cluster_stability_htf"),
     ).select(
         "instrument",
         "ts",
