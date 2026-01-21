@@ -258,6 +258,57 @@ ict_struct:
     # ---------------------------------------------------------------------
     mms_phase:               { role: feature, dtype: string }  # accumulation|manipulation|distribution|none
     mms_confidence:          { role: feature, dtype: double }  # 0..1
+
+
+ict_events:
+  table: "data/market_events"
+  enabled: false
+  maturity: "experimental"
+  description: "Canonical structural event stream derived from ict_struct evidence for auditability and research policy enumeration."
+  primary_key: [instrument, anchor_tf, ts, event_type]
+
+  threshold_keys:
+    - ict_events_source_family  # default "ict_struct"
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+    event_type: { role: key, dtype: string }
+
+    event_side:     { role: feature, dtype: string }
+    ref_level:      { role: feature, dtype: double }
+    ref_low:        { role: feature, dtype: double }
+    ref_high:       { role: feature, dtype: double }
+    event_strength: { role: feature, dtype: double }
+    event_quality:  { role: feature, dtype: double }
+    event_source:   { role: feature, dtype: string }
+
+    fvg_gap_ticks:  { role: feature, dtype: double }
+    fvg_fill_state: { role: feature, dtype: string }
+    fvg_fill_frac:  { role: feature, dtype: double }
+    fvg_age_bars:   { role: feature, dtype: int }
+    fvg_origin_ts:  { role: feature, dtype: timestamp }
+
+    ob_height_ticks:    { role: feature, dtype: double }
+    ob_age_bars:        { role: feature, dtype: int }
+    ob_freshness_bucket: { role: feature, dtype: string }
+    ob_breaker_flag:    { role: feature, dtype: boolean }
+
+    liq_sweep_depth_ticks:  { role: feature, dtype: double }
+    liq_sweep_reclaim_bars: { role: feature, dtype: int }
+
+    eq_level_hit_count: { role: feature, dtype: int }
+    eq_level_span_bars: { role: feature, dtype: int }
+
+    bos_distance_ticks: { role: feature, dtype: double }
+    bos_age_bars:       { role: feature, dtype: int }
+    choch_distance_ticks: { role: feature, dtype: double }
+    choch_age_bars:       { role: feature, dtype: int }
+
+    displacement_range_atr: { role: feature, dtype: double }
+    displacement_body_ratio: { role: feature, dtype: double }
+    displacement_close_loc: { role: feature, dtype: double }
     mms_range_high:          { role: feature, dtype: double }
     mms_range_low:           { role: feature, dtype: double }
     mms_range_age_bars:      { role: feature, dtype: int }
