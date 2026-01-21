@@ -12,6 +12,19 @@ If any design or implementation conflicts with this contract, the conflict **mus
 
 ---
 
+## System concept alignment (source of truth: README)
+
+This contract inherits the repo-wide system concept:
+
+- **Multi-paradigm by construction**; pipeline order and schemas are shared across paradigms.
+- **Hard lane separation** between deterministic engine, research/training, and control-plane.
+- **Deterministic engine lane** outputs are reproducible and audit-ready; configs are immutable in-run.
+- **Stable identity model** ensures comparability across runs and paradigms.
+
+If any text here conflicts with the README, the README is authoritative.
+
+---
+
 ## 1) Scope
 This contract applies to:
 

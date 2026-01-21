@@ -146,6 +146,8 @@ def _fold_group(df: pl.DataFrame, *, cfg: Mapping[str, Any], dr_id_prefix: str) 
 
         inside_ratio = row.get("_inside_ratio")
         tests_count = row.get("_tests_count")
+        test_high_count = row.get("_test_high_count")
+        test_low_count = row.get("_test_low_count")
         inside = bool(row.get("_inside", False))
         probe_low = bool(row.get("_probe_low", False))
         probe_high = bool(row.get("_probe_high", False))
@@ -154,6 +156,12 @@ def _fold_group(df: pl.DataFrame, *, cfg: Mapping[str, Any], dr_id_prefix: str) 
         outside_up = bool(row.get("_outside_up", False))
         outside_dn = bool(row.get("_outside_dn", False))
         trend_far = bool(row.get("_trend_far", False))
+        reclaim_margin = row.get("_reclaim_band")
+        accept_dist = row.get("_accept_dist")
+        trend_dist = row.get("_trend_dist")
+        range_position = row.get("range_position")
+        pierce_low = row.get("_pierce_low")
+        pierce_high = row.get("_pierce_high")
 
         if outside_up:
             outside_up_run += 1
@@ -167,6 +175,7 @@ def _fold_group(df: pl.DataFrame, *, cfg: Mapping[str, Any], dr_id_prefix: str) 
 
         accept_up = outside_up_run >= accept_bars_min
         accept_dn = outside_dn_run >= accept_bars_min
+        accept_bars = outside_up_run if outside_up else outside_dn_run if outside_dn else 0
 
         if trend_far:
             trend_run += 1
@@ -275,12 +284,34 @@ def _fold_group(df: pl.DataFrame, *, cfg: Mapping[str, Any], dr_id_prefix: str) 
                     "dr_start_ts": None,
                     "dr_last_update_ts": None,
                     "dr_reason_code": reason,
+                    "inside_ratio_L": inside_ratio,
+                    "tests_L": tests_count,
+                    "test_high_count_L": test_high_count,
+                    "test_low_count_L": test_low_count,
+                    "probe_side": None,
+                    "pierce_dist": None,
+                    "reclaim_margin": reclaim_margin,
+                    "accept_dist": accept_dist,
+                    "accept_bars": accept_bars,
+                    "retest_pass": None,
+                    "trend_dist": trend_dist,
+                    "trend_bars": trend_run,
+                    "range_position": range_position,
+                    "pd_index": None,
+                    "liq_eqh_count": None,
+                    "liq_eql_count": None,
                 }
             )
             continue
 
         state.age_bars += 1
         state.last_update_ts = ts
+        if probe_low:
+            pierce_dist = float(pierce_low) if pierce_low is not None else None
+        elif probe_high:
+            pierce_dist = float(pierce_high) if pierce_high is not None else None
+        else:
+            pierce_dist = None
 
         out_rows.append(
             {
@@ -298,6 +329,22 @@ def _fold_group(df: pl.DataFrame, *, cfg: Mapping[str, Any], dr_id_prefix: str) 
                 "dr_start_ts": state.start_ts,
                 "dr_last_update_ts": state.last_update_ts,
                 "dr_reason_code": reason,
+                "inside_ratio_L": inside_ratio,
+                "tests_L": tests_count,
+                "test_high_count_L": test_high_count,
+                "test_low_count_L": test_low_count,
+                "probe_side": state.probe_side if state.phase == "C" else None,
+                "pierce_dist": pierce_dist,
+                "reclaim_margin": reclaim_margin,
+                "accept_dist": accept_dist,
+                "accept_bars": accept_bars,
+                "retest_pass": None,
+                "trend_dist": trend_dist,
+                "trend_bars": trend_run,
+                "range_position": range_position,
+                "pd_index": None,
+                "liq_eqh_count": None,
+                "liq_eql_count": None,
             }
         )
 

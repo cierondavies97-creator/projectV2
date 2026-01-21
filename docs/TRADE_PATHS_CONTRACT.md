@@ -20,6 +20,19 @@ This contract is **paradigm‑agnostic** and supports multi‑paradigm research 
 
 ---
 
+## System concept alignment (source of truth: README)
+
+This contract aligns to the repo-wide system concept:
+
+- **Multi-paradigm by construction**; trade paths are comparable across paradigms.
+- **Hard lane separation** between deterministic engine, research/training, and control-plane.
+- **Deterministic engine lane** outputs are reproducible and audit-ready; configs are immutable in-run.
+- **Stable identity model** ensures comparability across runs and paradigms.
+
+If any text here conflicts with the README, the README is authoritative.
+
+---
+
 ## Required Fields (existing, baseline)
 These fields are already required by engine validations and downstream steps:
 

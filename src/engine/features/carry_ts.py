@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 import polars as pl
 
 from engine.features import FeatureBuildContext
-from engine.features._shared import safe_div
+from engine.features._shared import conform_to_registry, safe_div
 
 log = logging.getLogger(__name__)
 
@@ -23,12 +24,26 @@ def _empty_keyed_frame() -> pl.DataFrame:
     )
 
 
+def _merge_cfg(ctx: FeatureBuildContext, family_cfg: Mapping[str, object] | None) -> dict[str, object]:
+    cfg: dict[str, object] = {}
+    auto_cfg = getattr(ctx, "features_auto_cfg", None) or {}
+    if isinstance(auto_cfg, Mapping):
+        cfg.update(auto_cfg.get("carry_ts", {}) or {})
+    if isinstance(family_cfg, Mapping):
+        cfg.update(family_cfg)
+    return cfg
+
+
 def build_feature_frame(
+    *,
     ctx: FeatureBuildContext,
     candles: pl.DataFrame,
     ticks: pl.DataFrame | None = None,
     macro: pl.DataFrame | None = None,
     external: pl.DataFrame | None = None,
+    family_cfg: Mapping[str, object] | None = None,
+    registry_entry: Mapping[str, object] | None = None,
+    **_,
 ) -> pl.DataFrame:
     """
     Carry/term-structure proxy using rolling returns.
@@ -46,8 +61,7 @@ def build_feature_frame(
         log.warning("carry_ts: missing columns=%s; returning empty keyed frame", missing)
         return _empty_keyed_frame()
 
-    auto_cfg = getattr(ctx, "features_auto_cfg", None) or {}
-    fam_cfg = dict(auto_cfg.get("carry_ts", {}) if isinstance(auto_cfg, dict) else {})
+    fam_cfg = _merge_cfg(ctx, family_cfg)
 
     slope_window = max(5, int(fam_cfg.get("carry_slope_window_bars", 60)))
     score_window = max(10, int(fam_cfg.get("carry_score_window_bars", 252)))
@@ -133,5 +147,13 @@ def build_feature_frame(
         return _empty_keyed_frame()
 
     out = pl.concat(out_frames, how="vertical").sort(["instrument", "anchor_tf", "anchor_ts"])
+    out = conform_to_registry(
+        out,
+        registry_entry=registry_entry,
+        key_cols=["instrument", "anchor_tf", "anchor_ts"],
+        where="carry_ts",
+        allow_extra=False,
+    )
+
     log.info("carry_ts: built rows=%d", out.height)
     return out

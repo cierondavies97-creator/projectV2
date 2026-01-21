@@ -9,6 +9,19 @@ This document defines the **strategy pipelines** for both the deterministic engi
 
 ---
 
+## System concept alignment (source of truth: README)
+
+This document follows the repo-wide system concept:
+
+- **Multi-paradigm by construction**; Phase A–E outputs are paradigm-neutral inputs.
+- **Hard lane separation** between deterministic engine, research/training, and control-plane.
+- **Deterministic engine lane** outputs are reproducible and audit-ready; configs are immutable in-run.
+- **Stable identity model** ensures comparability across runs and paradigms.
+
+If any text here conflicts with the README, the README is authoritative.
+
+---
+
 ## 1) Shared assumptions and identity
 
 All pipelines use the canonical identity model:
