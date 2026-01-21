@@ -111,8 +111,12 @@ def build_feature_frame(
     fam_cfg = _merge_cfg(ctx, family_cfg)
 
     n_clusters = max(2, int(fam_cfg.get("unsup_n_clusters", 8)))
-    z_window = max(10, int(fam_cfg.get("unsup_zscore_window_bars", 200)))
-    vol_window = max(5, int(fam_cfg.get("unsup_vol_window_bars", 20)))
+    min_confidence = float(fam_cfg.get("unsup_min_confidence", 0.55))
+    clip_abs = float(fam_cfg.get("unsup_clip_abs", 8.0))
+    conf_temp = float(fam_cfg.get("unsup_conf_softmax_temp", 1.0))
+    entropy_high_cut = float(fam_cfg.get("unsup_entropy_high_cut", 1.5))
+    z_window = 200
+    vol_window = 20
 
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
@@ -159,6 +163,7 @@ def build_feature_frame(
         df = df.with_columns(vol).with_columns(
             safe_div(pl.col("_vol") - vol_mean, vol_std, default=0.0).alias("_vol_z"),
         )
+        df = df.with_columns(pl.col("_vol_z").clip(-clip_abs, clip_abs).alias("_vol_z"))
 
         rank = pl.col("_vol").rank("average").over(by)
         count = pl.count().over(by)

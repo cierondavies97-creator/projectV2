@@ -87,6 +87,7 @@ def build_feature_frame(
         )
 
     cfg = _merge_cfg(ctx, family_cfg)
+    spread_type = str(cfg.get("xs_relval_spread_type", "log_ratio"))
     z_window = max(5, int(cfg.get("xs_relval_spread_z_window", 60)))
     z_clip = float(cfg.get("xs_relval_z_clip_abs", 8.0))
     mild_cut = float(cfg.get("xs_relval_bucket_mild_cut", 1.5))
@@ -115,9 +116,16 @@ def build_feature_frame(
 
     by_ts = ["ts"]
     mean_ret = pl.col("_ret").mean().over(by_ts)
-    std_ret = pl.col("_ret").std(ddof=1).over(by_ts)
-
-    spread_level = (pl.col("_ret") - mean_ret).alias("xs_relval_spread_level")
+    mean_close = pl.col("close").mean().over(by_ts)
+    mean_log_close = pl.col("close").log().mean().over(by_ts)
+    if spread_type == "price_ratio":
+        spread_level = (safe_div(pl.col("close"), mean_close, default=None) - pl.lit(1.0)).alias(
+            "xs_relval_spread_level"
+        )
+    elif spread_type == "log_ratio":
+        spread_level = (pl.col("close").log() - mean_log_close).alias("xs_relval_spread_level")
+    else:
+        spread_level = (pl.col("_ret") - mean_ret).alias("xs_relval_spread_level")
 
     ret_rank = pl.col("_ret").rank("average").over(by_ts)
     count = pl.count().over(by_ts)
@@ -193,14 +201,6 @@ def build_feature_frame(
         "xs_relval_coint_pvalue",
         "xs_relval_half_life_bars",
         "xs_relval_residual_z",
-    )
-
-    out = conform_to_registry(
-        out,
-        registry_entry=registry_entry,
-        key_cols=["instrument", "ts"],
-        where="xs_relval",
-        allow_extra=False,
     )
 
     out = conform_to_registry(
