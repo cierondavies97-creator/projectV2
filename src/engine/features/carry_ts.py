@@ -11,7 +11,11 @@ from engine.features._shared import conform_to_registry, safe_div
 log = logging.getLogger(__name__)
 
 
-def _empty_keyed_frame() -> pl.DataFrame:
+def _empty_keyed_frame(registry_entry: Mapping[str, object] | None) -> pl.DataFrame:
+    if registry_entry and isinstance(registry_entry, Mapping):
+        columns = registry_entry.get("columns")
+        if isinstance(columns, Mapping) and columns:
+            return pl.DataFrame({col: pl.Series([], dtype=pl.Null) for col in columns})
     return pl.DataFrame(
         {
             "instrument": pl.Series([], dtype=pl.Utf8),
@@ -21,6 +25,29 @@ def _empty_keyed_frame() -> pl.DataFrame:
             "carry_ts_ts_slope": pl.Series([], dtype=pl.Float64),
             "carry_ts_ts_regime": pl.Series([], dtype=pl.Utf8),
         }
+    )
+
+
+def _base_keys_from_candles(candles: pl.DataFrame, anchor_tfs: list[str]) -> pl.DataFrame:
+    if candles is None or candles.is_empty():
+        return pl.DataFrame()
+    if not {"instrument", "tf", "ts"}.issubset(set(candles.columns)):
+        return pl.DataFrame()
+    df = candles.select(
+        pl.col("instrument").cast(pl.Utf8),
+        pl.col("tf").cast(pl.Utf8),
+        pl.col("ts").cast(pl.Datetime("us")),
+    ).drop_nulls(["instrument", "tf", "ts"])
+    if anchor_tfs:
+        df = df.filter(pl.col("tf").is_in(anchor_tfs))
+    return (
+        df.select(
+            pl.col("instrument"),
+            pl.col("tf").alias("anchor_tf"),
+            pl.col("ts").alias("anchor_ts"),
+        )
+        .unique()
+        .sort(["instrument", "anchor_tf", "anchor_ts"])
     )
 
 
@@ -53,13 +80,36 @@ def build_feature_frame(
     """
     if candles is None or candles.is_empty():
         log.warning("carry_ts: candles empty; returning empty keyed frame")
-        return _empty_keyed_frame()
+        return _empty_keyed_frame(registry_entry)
 
     required = {"instrument", "tf", "ts", "close"}
     missing = sorted(required - set(candles.columns))
     if missing:
-        log.warning("carry_ts: missing columns=%s; returning empty keyed frame", missing)
-        return _empty_keyed_frame()
+        log.warning("carry_ts: missing columns=%s; returning null-filled frame", missing)
+        base = _base_keys_from_candles(candles, [])
+        if base.is_empty():
+            return _empty_keyed_frame(registry_entry)
+        out = base.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_carry_score"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_ts_slope"),
+            pl.lit(None).cast(pl.Utf8).alias("carry_ts_ts_regime"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_level"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_level_z"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_slope_z"),
+            pl.lit(None).cast(pl.Utf8).alias("carry_ts_sign_bucket"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_confidence"),
+            pl.lit(None).cast(pl.Utf8).alias("carry_ts_source_used"),
+            pl.lit(None).cast(pl.Utf8).alias("carry_ts_proxy_method_used"),
+            pl.lit(None).cast(pl.Boolean).alias("carry_ts_missing_flag"),
+            pl.lit(None).cast(pl.Int64).alias("carry_ts_data_age_bars"),
+        )
+        return conform_to_registry(
+            out,
+            registry_entry=registry_entry,
+            key_cols=["instrument", "anchor_tf", "anchor_ts"],
+            where="carry_ts",
+            allow_extra=False,
+        )
 
     fam_cfg = _merge_cfg(ctx, family_cfg)
 
@@ -71,9 +121,17 @@ def build_feature_frame(
 
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
+    if not anchor_tfs and "tf" in candles.columns:
+        anchor_tfs = (
+            candles.select(pl.col("tf").cast(pl.Utf8))
+            .drop_nulls()
+            .unique()
+            .to_series()
+            .to_list()
+        )
     if not anchor_tfs:
-        log.warning("carry_ts: ctx.cluster.anchor_tfs empty; returning empty keyed frame")
-        return _empty_keyed_frame()
+        log.warning("carry_ts: no anchor_tfs resolved; returning empty keyed frame")
+        return _empty_keyed_frame(registry_entry)
 
     c = (
         candles.select(
@@ -130,6 +188,22 @@ def build_feature_frame(
             .then(pl.lit("backwardated"))
             .otherwise(pl.lit("unknown"))
             .alias("carry_ts_ts_regime"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_level"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_level_z"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_slope_z"),
+            pl.when(pl.col("carry_ts_ts_regime") == pl.lit("contango"))
+            .then(pl.lit("positive"))
+            .when(pl.col("carry_ts_ts_regime") == pl.lit("backwardated"))
+            .then(pl.lit("negative"))
+            .when(pl.col("carry_ts_ts_regime") == pl.lit("flat"))
+            .then(pl.lit("flat"))
+            .otherwise(pl.lit("unknown"))
+            .alias("carry_ts_sign_bucket"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_confidence"),
+            pl.lit(str(fam_cfg.get("carry_source", "external"))).alias("carry_ts_source_used"),
+            pl.lit(str(fam_cfg.get("carry_proxy_method", "none"))).alias("carry_ts_proxy_method_used"),
+            pl.lit(False).cast(pl.Boolean).alias("carry_ts_missing_flag"),
+            pl.lit(0).cast(pl.Int64).alias("carry_ts_data_age_bars"),
         )
 
         out_frames.append(
@@ -140,11 +214,43 @@ def build_feature_frame(
                 "carry_ts_carry_score",
                 "carry_ts_ts_slope",
                 "carry_ts_ts_regime",
+                "carry_ts_level",
+                "carry_ts_level_z",
+                "carry_ts_slope_z",
+                "carry_ts_sign_bucket",
+                "carry_ts_confidence",
+                "carry_ts_source_used",
+                "carry_ts_proxy_method_used",
+                "carry_ts_missing_flag",
+                "carry_ts_data_age_bars",
             )
         )
 
     if not out_frames:
-        return _empty_keyed_frame()
+        base = _base_keys_from_candles(candles, [str(tf) for tf in anchor_tfs])
+        if base.is_empty():
+            return _empty_keyed_frame(registry_entry)
+        out = base.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_carry_score"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_ts_slope"),
+            pl.lit(None).cast(pl.Utf8).alias("carry_ts_ts_regime"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_level"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_level_z"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_slope_z"),
+            pl.lit(None).cast(pl.Utf8).alias("carry_ts_sign_bucket"),
+            pl.lit(None).cast(pl.Float64).alias("carry_ts_confidence"),
+            pl.lit(str(fam_cfg.get("carry_source", "external"))).alias("carry_ts_source_used"),
+            pl.lit(str(fam_cfg.get("carry_proxy_method", "none"))).alias("carry_ts_proxy_method_used"),
+            pl.lit(True).cast(pl.Boolean).alias("carry_ts_missing_flag"),
+            pl.lit(None).cast(pl.Int64).alias("carry_ts_data_age_bars"),
+        )
+        return conform_to_registry(
+            out,
+            registry_entry=registry_entry,
+            key_cols=["instrument", "anchor_tf", "anchor_ts"],
+            where="carry_ts",
+            allow_extra=False,
+        )
 
     out = pl.concat(out_frames, how="vertical").sort(["instrument", "anchor_tf", "anchor_ts"])
     out = conform_to_registry(
