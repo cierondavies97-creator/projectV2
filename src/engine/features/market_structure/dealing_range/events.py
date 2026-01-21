@@ -51,6 +51,18 @@ def compute_event_flags(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> pl.Dat
 
     test_high = (pl.col("high") >= (pl.col("dr_high") - pl.col("_test_band"))).alias("_test_high")
     test_low = (pl.col("low") <= (pl.col("dr_low") + pl.col("_test_band"))).alias("_test_low")
+    test_high_count = (
+        pl.col("_test_high")
+        .cast(pl.Int64)
+        .rolling_sum(window_size=lookback, min_periods=lookback)
+        .alias("_test_high_count")
+    )
+    test_low_count = (
+        pl.col("_test_low")
+        .cast(pl.Int64)
+        .rolling_sum(window_size=lookback, min_periods=lookback)
+        .alias("_test_low_count")
+    )
     tests_count = (
         (pl.col("_test_high").cast(pl.Int64) + pl.col("_test_low").cast(pl.Int64))
         .rolling_sum(window_size=lookback, min_periods=lookback)
@@ -83,7 +95,7 @@ def compute_event_flags(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> pl.Dat
         .with_columns(inside)
         .with_columns(inside_ratio)
         .with_columns(test_high, test_low)
-        .with_columns(tests_count)
+        .with_columns(test_high_count, test_low_count, tests_count)
         .with_columns(pierce_low, pierce_high)
         .with_columns(probe_low, probe_high)
         .with_columns(reclaim_from_low, reclaim_from_high)
