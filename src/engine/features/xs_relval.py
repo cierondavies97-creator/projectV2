@@ -203,5 +203,13 @@ def build_feature_frame(
         allow_extra=False,
     )
 
+    out = conform_to_registry(
+        out,
+        registry_entry=registry_entry,
+        key_cols=["instrument", "ts"],
+        where="xs_relval",
+        allow_extra=False,
+    )
+
     log.info("xs_relval: built rows=%d", out.height)
     return out
