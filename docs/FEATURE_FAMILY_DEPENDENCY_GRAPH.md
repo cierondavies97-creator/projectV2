@@ -10,6 +10,28 @@ It is grounded in the current repo contracts (features registry, feature builder
 
 ---
 
+## 0) What this doc adds (proposed families + schema/threshold expansions)
+
+This document is **documentation-only**. It does **not** add runtime code or enable new families by itself. It does, however, propose and catalog new families and schema/threshold expansions to make the pipeline deterministic, auditable, and multi-paradigm.
+
+**New families introduced or expanded here (all disabled by default):**
+
+- **`unsup_regime`** (stub, `data/windows`): Adds unsupervised regime labels with provenance and diagnostics; thresholds cover standardization, imputations, clustering knobs, and confidence calibration.
+- **`carry_ts`** (stub, `data/windows`): Adds carry/term-structure proxy outputs plus provenance and data quality flags; thresholds include proxy method/normalization.
+- **`ta_memory`** (stub, `data/zones_state`): Adds zone-scoped TA memory features (RSI/EMA interactions) and reversal/breakout rates; thresholds include decay and event-count guards.
+- **`corr_htf`** (stub, `data/features_corr`): Adds slow correlation summaries and cluster diagnostics; thresholds include HTF windows and clustering cadence.
+- **`xs_relval`** (stub, `data/features_corr`): Adds cross-sectional RV spread diagnostics and peer selection logic; thresholds include peer selection, spread type, and coint gates.
+- **`macro_regime`** (stub, `data/macro`): Adds macro regime labels with provenance; thresholds include method selection and confidence policy.
+- **`dealing_range_state`** (experimental, `data/windows`): Formalizes B–E dealing-range state outputs (Phase labels + evidence) with explicit threshold keys.
+- **`microstructure_flow`** (experimental, `data/features`): Adds OFI/imbalance/intensity summary per anchor window.
+- **`jump_variation`** (experimental, `data/features`): Adds RV/BV/JV and semivariances with configurable base TF and windows.
+- **`impact_lambda`** (experimental, `data/features`): Adds Kyle’s λ impact estimates and regime labels.
+- **`options_context`** (experimental, `data/windows`): Adds IV/Greeks, skew, term slope, VRP, and model-free IV summary outputs.
+
+If you want to implement any of these, the registry entries define the **authoritative** column contracts and threshold keys; code should conform to those schemas.
+
+---
+
 ## 1) Dependency graph (family → required inputs → outputs → consumers)
 
 **Legend**

@@ -20,7 +20,7 @@ def compute_range_descriptors(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> 
     Compute range descriptors on a single instrument+tf candle frame.
 
     Expected columns: ts, high, low, close
-    Adds: atr, dr_low, dr_high, dr_mid, dr_width, dr_width_atr
+    Adds: atr, dr_low, dr_high, dr_mid, dr_width, dr_width_atr, range_position
     """
     if df.is_empty():
         return df
@@ -44,9 +44,14 @@ def compute_range_descriptors(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> 
     dr_width = (pl.col("dr_high") - pl.col("dr_low")).alias("dr_width")
     dr_mid = ((pl.col("dr_high") + pl.col("dr_low")) / 2.0).alias("dr_mid")
     dr_width_atr = safe_div(pl.col("dr_width"), pl.col("atr"), default=None).alias("dr_width_atr")
+    range_position = safe_div(
+        pl.col("close") - pl.col("dr_low"),
+        pl.col("dr_width"),
+        default=None,
+    ).alias("range_position")
 
     return (
         df.with_columns(tr)
         .with_columns(atr)
-        .with_columns(dr_high, dr_low, dr_width, dr_mid, dr_width_atr)
+        .with_columns(dr_high, dr_low, dr_width, dr_mid, dr_width_atr, range_position)
     )
