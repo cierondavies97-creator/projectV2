@@ -10,6 +10,19 @@ It is grounded in the current repo contracts (features registry, feature builder
 
 ---
 
+## System concept alignment (source of truth: README)
+
+All guidance in this document is consistent with the repository’s core system concept:
+
+- **Multi-paradigm by construction**; no paradigm is privileged in the pipeline.
+- **Hard lane separation** between deterministic engine, research/training, and control-plane.
+- **Deterministic engine lane**: reproducible, audit-ready outputs; no in-run config mutation.
+- **Stable identity model** and schema contracts so artifacts remain comparable across runs.
+
+If any future update to this document conflicts with the README, the README takes precedence.
+
+---
+
 ## 0) What this doc adds (proposed families + schema/threshold expansions)
 
 This document is **documentation-only**. It does **not** add runtime code or enable new families by itself. It does, however, propose and catalog new families and schema/threshold expansions to make the pipeline deterministic, auditable, and multi-paradigm.
