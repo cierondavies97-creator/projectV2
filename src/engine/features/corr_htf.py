@@ -5,17 +5,37 @@ import logging
 import polars as pl
 
 from engine.features import FeatureBuildContext
-from engine.features._shared import safe_div
+from engine.features._shared import conform_to_registry, safe_div
 
 log = logging.getLogger(__name__)
 
 
-def _empty_keyed_frame() -> pl.DataFrame:
+def _empty_keyed_frame(registry_entry: dict | None) -> pl.DataFrame:
+    if registry_entry and isinstance(registry_entry, dict):
+        columns = registry_entry.get("columns")
+        if isinstance(columns, dict) and columns:
+            return pl.DataFrame({col: pl.Series([], dtype=pl.Null) for col in columns})
     return pl.DataFrame(
         {
             "instrument": pl.Series([], dtype=pl.Utf8),
             "ts": pl.Series([], dtype=pl.Datetime("us")),
         }
+    )
+
+
+def _base_keys_from_candles(candles: pl.DataFrame) -> pl.DataFrame:
+    if candles is None or candles.is_empty():
+        return pl.DataFrame()
+    if not {"instrument", "ts"}.issubset(set(candles.columns)):
+        return pl.DataFrame()
+    return (
+        candles.select(
+            pl.col("instrument").cast(pl.Utf8),
+            pl.col("ts").cast(pl.Datetime("us")),
+        )
+        .drop_nulls(["instrument", "ts"])
+        .unique()
+        .sort(["instrument", "ts"])
     )
 
 
@@ -25,6 +45,7 @@ def build_feature_frame(
     ticks: pl.DataFrame | None = None,
     macro: pl.DataFrame | None = None,
     external: pl.DataFrame | None = None,
+    registry_entry: dict | None = None,
 ) -> pl.DataFrame:
     """
     Higher-timeframe correlation proxy using a longer rolling window.
@@ -34,11 +55,21 @@ def build_feature_frame(
     """
     if candles is None or candles.is_empty():
         log.warning("corr_htf: candles empty; returning empty keyed frame")
-        return _empty_keyed_frame()
+        return _empty_keyed_frame(registry_entry)
 
     if not {"instrument", "ts", "close"}.issubset(set(candles.columns)):
-        log.warning("corr_htf: missing required columns; returning empty keyed frame")
-        return _empty_keyed_frame()
+        log.warning("corr_htf: missing required columns; returning null-filled frame")
+        base = _base_keys_from_candles(candles)
+        if base.is_empty():
+            return _empty_keyed_frame(registry_entry)
+        out = conform_to_registry(
+            base,
+            registry_entry=registry_entry,
+            key_cols=["instrument", "ts"],
+            where="corr_htf",
+            allow_extra=False,
+        )
+        return out
 
     window = 200
     c = candles.select(
@@ -68,6 +99,13 @@ def build_feature_frame(
     corr = safe_div(mean_prod - (mean_ret * mean_mkt), std_ret * std_mkt, default=0.0).alias("corr_htf_proxy")
 
     out = c.with_columns(corr).select("instrument", "ts")
+    out = conform_to_registry(
+        out,
+        registry_entry=registry_entry,
+        key_cols=["instrument", "ts"],
+        where="corr_htf",
+        allow_extra=False,
+    )
 
     log.info("corr_htf: built rows=%d window=%d", out.height, window)
     return out
