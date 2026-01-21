@@ -1942,9 +1942,29 @@ internal_liquidity:
 
   threshold_keys:
     - internal_liq_lookback_bars
+    - internal_liq_range_method
+    - internal_liq_range_min_atr
+    - internal_liq_range_max_atr
+    - internal_liq_interior_buffer_mode
+    - internal_liq_interior_buffer_ticks
     - internal_liq_atr_window
     - internal_liq_edge_atr_mult
     - internal_liq_min_count
+    - internal_liq_pivot_left_bars
+    - internal_liq_pivot_right_bars
+    - internal_liq_pivot_prominence_atr_min
+    - internal_liq_level_merge_mode
+    - internal_liq_level_merge_ticks
+    - internal_liq_level_merge_atr_mult
+    - internal_liq_max_levels_per_side
+    - internal_liq_level_rank_method
+    - internal_liq_touch_mode
+    - internal_liq_touch_tolerance_mode
+    - internal_liq_touch_tolerance_ticks
+    - internal_liq_touch_tolerance_atr_mult
+    - internal_liq_min_bars_between_touches
+    - internal_liq_nearest_dist_atr_max
+    - internal_liq_require_both_sides
     - internal_liq_source
     - internal_liq_micro_window_bars
     - internal_liq_micro_intensity_z_cut
