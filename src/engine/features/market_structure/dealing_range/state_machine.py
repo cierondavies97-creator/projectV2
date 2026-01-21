@@ -36,6 +36,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+_CFG_KEY_MAP = {
+    "dealing_range_lookback_bars": "lookback_bars",
+    "width_min_atr_mult": "width_min_atr",
+    "test_band_atr_mult": "test_atr_mult",
+    "spring_penetration_atr_mult": "probe_atr_mult",
+    "trend_distance_atr": "trend_atr_mult",
+}
+
+
 REQUIRED_DR_FIELDS = [
     "dr_id",
     "dr_phase",
@@ -49,6 +58,25 @@ REQUIRED_DR_FIELDS = [
     "dr_last_update_ts",
     "dr_reason_code",
 ]
+
+EVIDENCE_FIELDS: dict[str, pl.DataType] = {
+    "inside_ratio_L": pl.Float64,
+    "tests_L": pl.Int64,
+    "test_high_count_L": pl.Int64,
+    "test_low_count_L": pl.Int64,
+    "probe_side": pl.Utf8,
+    "pierce_dist": pl.Float64,
+    "reclaim_margin": pl.Float64,
+    "accept_dist": pl.Float64,
+    "accept_bars": pl.Int64,
+    "retest_pass": pl.Boolean,
+    "trend_dist": pl.Float64,
+    "trend_bars": pl.Int64,
+    "range_position": pl.Float64,
+    "pd_index": pl.Float64,
+    "liq_eqh_count": pl.Int64,
+    "liq_eql_count": pl.Int64,
+}
 
 
 @dataclass
@@ -65,7 +93,11 @@ class _DRState:
 def _merge_cfg(cfg: Mapping[str, Any] | None) -> dict[str, Any]:
     merged = dict(DEFAULT_CONFIG)
     if cfg:
-        merged.update({k: v for k, v in cfg.items() if v is not None})
+        normalized = {}
+        for key, value in cfg.items():
+            mapped_key = _CFG_KEY_MAP.get(key, key)
+            normalized[mapped_key] = value
+        merged.update({k: v for k, v in normalized.items() if v is not None})
     return merged
 
 
@@ -91,6 +123,8 @@ def _empty_output(base: pl.DataFrame, cfg: Mapping[str, Any]) -> pl.DataFrame:
             out = out.with_columns(pl.lit(None).cast(pl.Float64).alias(col))
         else:
             out = out.with_columns(pl.lit(None).cast(pl.Utf8).alias(col))
+    for col, dtype in EVIDENCE_FIELDS.items():
+        out = out.with_columns(pl.lit(None).cast(dtype).alias(col))
     return _policy_frame(out, cfg)
 
 
@@ -140,6 +174,22 @@ def _fold_group(df: pl.DataFrame, *, cfg: Mapping[str, Any], dr_id_prefix: str) 
                     "dr_start_ts": None,
                     "dr_last_update_ts": None,
                     "dr_reason_code": None,
+                    "inside_ratio_L": None,
+                    "tests_L": None,
+                    "test_high_count_L": None,
+                    "test_low_count_L": None,
+                    "probe_side": None,
+                    "pierce_dist": None,
+                    "reclaim_margin": None,
+                    "accept_dist": None,
+                    "accept_bars": None,
+                    "retest_pass": None,
+                    "trend_dist": None,
+                    "trend_bars": None,
+                    "range_position": None,
+                    "pd_index": None,
+                    "liq_eqh_count": None,
+                    "liq_eql_count": None,
                 }
             )
             continue

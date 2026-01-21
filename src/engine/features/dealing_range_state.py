@@ -123,6 +123,8 @@ def build_feature_frame(
         return _empty_keyed_frame(registry_entry)
 
     out = pl.concat(frames, how="vertical").sort(["instrument", "anchor_tf", "anchor_ts"])
+    if "ts" in out.columns and "anchor_ts" not in out.columns:
+        out = out.rename({"ts": "anchor_ts"})
     out = conform_to_registry(
         out,
         registry_entry=registry_entry,

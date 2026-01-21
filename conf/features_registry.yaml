@@ -258,6 +258,57 @@ ict_struct:
     # ---------------------------------------------------------------------
     mms_phase:               { role: feature, dtype: string }  # accumulation|manipulation|distribution|none
     mms_confidence:          { role: feature, dtype: double }  # 0..1
+
+
+ict_events:
+  table: "data/market_events"
+  enabled: false
+  maturity: "experimental"
+  description: "Canonical structural event stream derived from ict_struct evidence for auditability and research policy enumeration."
+  primary_key: [instrument, anchor_tf, ts, event_type]
+
+  threshold_keys:
+    - ict_events_source_family  # default "ict_struct"
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    ts:         { role: key, dtype: timestamp }
+    event_type: { role: key, dtype: string }
+
+    event_side:     { role: feature, dtype: string }
+    ref_level:      { role: feature, dtype: double }
+    ref_low:        { role: feature, dtype: double }
+    ref_high:       { role: feature, dtype: double }
+    event_strength: { role: feature, dtype: double }
+    event_quality:  { role: feature, dtype: double }
+    event_source:   { role: feature, dtype: string }
+
+    fvg_gap_ticks:  { role: feature, dtype: double }
+    fvg_fill_state: { role: feature, dtype: string }
+    fvg_fill_frac:  { role: feature, dtype: double }
+    fvg_age_bars:   { role: feature, dtype: int }
+    fvg_origin_ts:  { role: feature, dtype: timestamp }
+
+    ob_height_ticks:    { role: feature, dtype: double }
+    ob_age_bars:        { role: feature, dtype: int }
+    ob_freshness_bucket: { role: feature, dtype: string }
+    ob_breaker_flag:    { role: feature, dtype: boolean }
+
+    liq_sweep_depth_ticks:  { role: feature, dtype: double }
+    liq_sweep_reclaim_bars: { role: feature, dtype: int }
+
+    eq_level_hit_count: { role: feature, dtype: int }
+    eq_level_span_bars: { role: feature, dtype: int }
+
+    bos_distance_ticks: { role: feature, dtype: double }
+    bos_age_bars:       { role: feature, dtype: int }
+    choch_distance_ticks: { role: feature, dtype: double }
+    choch_age_bars:       { role: feature, dtype: int }
+
+    displacement_range_atr: { role: feature, dtype: double }
+    displacement_body_ratio: { role: feature, dtype: double }
+    displacement_close_loc: { role: feature, dtype: double }
     mms_range_high:          { role: feature, dtype: double }
     mms_range_low:           { role: feature, dtype: double }
     mms_range_age_bars:      { role: feature, dtype: int }
@@ -1931,6 +1982,79 @@ dealing_range_state:
     jump_policy_id:       { role: feature, dtype: string }
     impact_policy_id:     { role: feature, dtype: string }
     options_policy_id:    { role: feature, dtype: string }
+
+
+internal_liquidity:
+  table: "data/windows"
+  enabled: false
+  maturity: "stub"
+  description: "Internal liquidity levels and counts inside recent ranges; deterministic, range-interior proxy with optional microstructure augmentation."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - internal_liq_lookback_bars
+    - internal_liq_range_method
+    - internal_liq_range_min_atr
+    - internal_liq_range_max_atr
+    - internal_liq_interior_buffer_mode
+    - internal_liq_interior_buffer_ticks
+    - internal_liq_atr_window
+    - internal_liq_edge_atr_mult
+    - internal_liq_min_count
+    - internal_liq_pivot_left_bars
+    - internal_liq_pivot_right_bars
+    - internal_liq_pivot_prominence_atr_min
+    - internal_liq_level_merge_mode
+    - internal_liq_level_merge_ticks
+    - internal_liq_level_merge_atr_mult
+    - internal_liq_max_levels_per_side
+    - internal_liq_level_rank_method
+    - internal_liq_touch_mode
+    - internal_liq_touch_tolerance_mode
+    - internal_liq_touch_tolerance_ticks
+    - internal_liq_touch_tolerance_atr_mult
+    - internal_liq_min_bars_between_touches
+    - internal_liq_nearest_dist_atr_max
+    - internal_liq_require_both_sides
+    - internal_liq_source
+    - internal_liq_micro_window_bars
+    - internal_liq_micro_intensity_z_cut
+    - internal_liq_micro_confirm_mode
+    - internal_liq_ofi_flip_min_events
+    - internal_liq_agg_flip_min_events
+    - internal_liq_micro_event_band_ticks
+    - internal_liq_spread_spike_z_cut
+    - internal_liq_overlap_family
+    - internal_liq_overlap_max_dist_atr
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    internal_liq_high_count_L:   { role: feature, dtype: int }
+    internal_liq_low_count_L:    { role: feature, dtype: int }
+    internal_liq_level_high:     { role: feature, dtype: double }
+    internal_liq_level_low:      { role: feature, dtype: double }
+    internal_liq_nearest_side:   { role: feature, dtype: string }
+    internal_liq_nearest_dist_atr: { role: feature, dtype: double }
+    internal_liq_flag:           { role: feature, dtype: boolean }
+    internal_liq_reason_code:    { role: feature, dtype: string }
+    internal_liq_source_used:    { role: feature, dtype: string }
+    internal_liq_fvg_overlap_flag: { role: feature, dtype: boolean }
+    internal_liq_overlap_flag: { role: feature, dtype: boolean }
+    internal_liq_overlap_family_used: { role: feature, dtype: string }
+    internal_liq_micro_near_level_flag: { role: feature, dtype: boolean }
+    internal_liq_micro_confirm_flag: { role: feature, dtype: boolean }
+    internal_liq_ofi_flip_flag: { role: feature, dtype: boolean }
+    internal_liq_ofi_flip_count_L: { role: feature, dtype: int }
+    internal_liq_agg_flip_flag: { role: feature, dtype: boolean }
+    internal_liq_agg_flip_count_L: { role: feature, dtype: int }
+    internal_liq_intensity_spike_flag: { role: feature, dtype: boolean }
+    internal_liq_intensity_z: { role: feature, dtype: double }
+    internal_liq_spread_z: { role: feature, dtype: double }
+    internal_liq_spread_spike_flag: { role: feature, dtype: boolean }
+    internal_liq_micro_source_used: { role: feature, dtype: string }
 
 microstructure_flow:
   table: "data/features"
