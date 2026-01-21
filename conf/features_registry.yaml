@@ -1968,6 +1968,13 @@ internal_liquidity:
     - internal_liq_source
     - internal_liq_micro_window_bars
     - internal_liq_micro_intensity_z_cut
+    - internal_liq_micro_confirm_mode
+    - internal_liq_ofi_flip_min_events
+    - internal_liq_agg_flip_min_events
+    - internal_liq_micro_event_band_ticks
+    - internal_liq_spread_spike_z_cut
+    - internal_liq_overlap_family
+    - internal_liq_overlap_max_dist_atr
 
   columns:
     instrument: { role: key, dtype: string }
@@ -1984,11 +1991,18 @@ internal_liquidity:
     internal_liq_reason_code:    { role: feature, dtype: string }
     internal_liq_source_used:    { role: feature, dtype: string }
     internal_liq_fvg_overlap_flag: { role: feature, dtype: boolean }
+    internal_liq_overlap_flag: { role: feature, dtype: boolean }
+    internal_liq_overlap_family_used: { role: feature, dtype: string }
+    internal_liq_micro_near_level_flag: { role: feature, dtype: boolean }
     internal_liq_micro_confirm_flag: { role: feature, dtype: boolean }
     internal_liq_ofi_flip_flag: { role: feature, dtype: boolean }
+    internal_liq_ofi_flip_count_L: { role: feature, dtype: int }
     internal_liq_agg_flip_flag: { role: feature, dtype: boolean }
+    internal_liq_agg_flip_count_L: { role: feature, dtype: int }
     internal_liq_intensity_spike_flag: { role: feature, dtype: boolean }
     internal_liq_intensity_z: { role: feature, dtype: double }
+    internal_liq_spread_z: { role: feature, dtype: double }
+    internal_liq_spread_spike_flag: { role: feature, dtype: boolean }
     internal_liq_micro_source_used: { role: feature, dtype: string }
 
 microstructure_flow:

@@ -38,20 +38,73 @@ def _merge_cfg(ctx: FeatureBuildContext, family_cfg: Mapping[str, object] | None
 def _microstructure_frame(external: pl.DataFrame | None) -> pl.DataFrame:
     if external is None or external.is_empty():
         return pl.DataFrame()
-    required = {"instrument", "anchor_tf", "ts", "ofi", "agg_imbalance", "intensity"}
+    ts_col = "anchor_ts" if "anchor_ts" in external.columns else "ts"
+    has_base = {"ofi", "agg_imbalance", "intensity"}.issubset(set(external.columns))
+    has_micro = {
+        "micro_ofi_value",
+        "micro_agg_imbalance",
+        "micro_intensity_events",
+    }.issubset(set(external.columns))
+    if not has_base and not has_micro:
+        return pl.DataFrame()
+    required = {"instrument", "anchor_tf", ts_col}
     if not required.issubset(set(external.columns)):
         return pl.DataFrame()
+    ofi_col = "ofi" if has_base else "micro_ofi_value"
+    agg_col = "agg_imbalance" if has_base else "micro_agg_imbalance"
+    intensity_col = "intensity" if has_base else "micro_intensity_events"
+    spread_col = next(
+        (col for col in ("spread", "bid_ask_spread", "micro_spread") if col in external.columns),
+        None,
+    )
+    selections = [
+        pl.col("instrument").cast(pl.Utf8),
+        pl.col("anchor_tf").cast(pl.Utf8),
+        pl.col(ts_col).cast(pl.Datetime("us")).alias("anchor_ts"),
+        pl.col(ofi_col).cast(pl.Float64).alias("ofi"),
+        pl.col(agg_col).cast(pl.Float64).alias("agg_imbalance"),
+        pl.col(intensity_col).cast(pl.Float64).alias("intensity"),
+    ]
+    if spread_col is not None:
+        selections.append(pl.col(spread_col).cast(pl.Float64).alias("spread"))
     return (
-        external.select(
-            pl.col("instrument").cast(pl.Utf8),
-            pl.col("anchor_tf").cast(pl.Utf8),
-            pl.col("ts").cast(pl.Datetime("us")).alias("anchor_ts"),
-            pl.col("ofi").cast(pl.Float64),
-            pl.col("agg_imbalance").cast(pl.Float64),
-            pl.col("intensity").cast(pl.Float64),
-        )
+        external.select(*selections)
         .drop_nulls(["instrument", "anchor_tf", "anchor_ts"])
         .sort(["instrument", "anchor_tf", "anchor_ts"])
+    )
+
+
+def _overlap_frame(external: pl.DataFrame | None) -> pl.DataFrame:
+    if external is None or external.is_empty():
+        return pl.DataFrame()
+    ts_col = "anchor_ts" if "anchor_ts" in external.columns else "ts"
+    required = {"instrument", "anchor_tf", ts_col}
+    if not required.issubset(set(external.columns)):
+        return pl.DataFrame()
+    overlap_cols = [
+        col
+        for col in (
+            "fvg_lower",
+            "fvg_upper",
+            "ob_low",
+            "ob_high",
+            "zmf_zone_lo",
+            "zmf_zone_hi",
+        )
+        if col in external.columns
+    ]
+    if not overlap_cols:
+        return pl.DataFrame()
+    selections = [
+        pl.col("instrument").cast(pl.Utf8),
+        pl.col("anchor_tf").cast(pl.Utf8),
+        pl.col(ts_col).cast(pl.Datetime("us")).alias("ts"),
+        *[pl.col(col).cast(pl.Float64) for col in overlap_cols],
+    ]
+    return (
+        external.select(*selections)
+        .drop_nulls(["instrument", "anchor_tf", "ts"])
+        .sort(["instrument", "anchor_tf", "ts"])
     )
 
 
@@ -120,6 +173,13 @@ def build_feature_frame(
     source_used = str(cfg.get("internal_liq_source", "range_interior"))
     micro_window = max(5, int(cfg.get("internal_liq_micro_window_bars", 50)))
     micro_intensity_cut = float(cfg.get("internal_liq_micro_intensity_z_cut", 2.0))
+    micro_confirm_mode = str(cfg.get("internal_liq_micro_confirm_mode", "hybrid")).lower()
+    ofi_flip_min_events = max(1, int(cfg.get("internal_liq_ofi_flip_min_events", 1)))
+    agg_flip_min_events = max(1, int(cfg.get("internal_liq_agg_flip_min_events", 1)))
+    micro_event_band_ticks = float(cfg.get("internal_liq_micro_event_band_ticks", 0.0))
+    spread_spike_z_cut = float(cfg.get("internal_liq_spread_spike_z_cut", 0.0))
+    overlap_family = str(cfg.get("internal_liq_overlap_family", "none"))
+    overlap_max_dist_atr = float(cfg.get("internal_liq_overlap_max_dist_atr", 0.0))
 
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
@@ -135,12 +195,16 @@ def build_feature_frame(
             pl.col("high").cast(pl.Float64),
             pl.col("low").cast(pl.Float64),
             pl.col("close").cast(pl.Float64),
+            pl.col("tick_size").cast(pl.Float64) if "tick_size" in candles.columns else pl.lit(None).cast(pl.Float64),
         )
         .drop_nulls(["instrument", "tf", "ts"])
         .sort(["instrument", "tf", "ts"])
     )
+    if "tick_size" not in c.columns:
+        c = c.with_columns(pl.lit(1.0).alias("tick_size"))
 
     micro_df = _microstructure_frame(external)
+    overlap_df = _overlap_frame(external)
     out_frames: list[pl.DataFrame] = []
     for anchor_tf in anchor_tfs:
         tf_str = str(anchor_tf)
@@ -278,6 +342,21 @@ def build_feature_frame(
             .otherwise(pl.lit("low"))
         )
         nearest_dist = pl.when(nearest_side == pl.lit("high")).then(dist_high).otherwise(dist_low)
+        nearest_level_px = (
+            pl.when(nearest_side == pl.lit("high"))
+            .then(internal_high)
+            .when(nearest_side == pl.lit("low"))
+            .then(internal_low)
+            .otherwise(pl.lit(None).cast(pl.Float64))
+        )
+        band_px = pl.col("tick_size") * pl.lit(micro_event_band_ticks)
+        micro_near_level = (
+            pl.when(pl.lit(micro_event_band_ticks) <= 0)
+            .then(pl.lit(None).cast(pl.Boolean))
+            .when(nearest_level_px.is_not_null())
+            .then((pl.col("close") - nearest_level_px).abs() <= band_px)
+            .otherwise(pl.lit(False))
+        )
 
         width_atr = safe_div(range_high - range_low, pl.col("_atr"), default=0.0)
         flag = (high_count >= pl.lit(min_count)) | (low_count >= pl.lit(min_count))
@@ -309,8 +388,65 @@ def build_feature_frame(
             flag.cast(pl.Boolean).alias("internal_liq_flag"),
             reason.alias("internal_liq_reason_code"),
             pl.lit(source_used).alias("internal_liq_source_used"),
+            micro_near_level.alias("internal_liq_micro_near_level_flag"),
             pl.lit(None).cast(pl.Boolean).alias("internal_liq_fvg_overlap_flag"),
         )
+
+        if not overlap_df.is_empty():
+            df_overlap = overlap_df.filter(pl.col("anchor_tf") == pl.lit(tf_str))
+            if not df_overlap.is_empty():
+                out = out.join(df_overlap, on=["instrument", "anchor_tf", "ts"], how="left")
+                band_atr = pl.col("_atr") * pl.lit(overlap_max_dist_atr)
+                has_fvg = {"fvg_lower", "fvg_upper"}.issubset(set(out.columns))
+                has_ob = {"ob_low", "ob_high"}.issubset(set(out.columns))
+                has_zmf = {"zmf_zone_lo", "zmf_zone_hi"}.issubset(set(out.columns))
+
+                def _level_overlap(level: pl.Expr, low: pl.Expr, high: pl.Expr) -> pl.Expr:
+                    return (
+                        level.is_not_null()
+                        & low.is_not_null()
+                        & high.is_not_null()
+                        & (level >= (low - band_atr))
+                        & (level <= (high + band_atr))
+                    )
+
+                fvg_overlap = (
+                    _level_overlap(internal_high, pl.col("fvg_lower"), pl.col("fvg_upper"))
+                    | _level_overlap(internal_low, pl.col("fvg_lower"), pl.col("fvg_upper"))
+                    if has_fvg
+                    else pl.lit(None).cast(pl.Boolean)
+                )
+                ob_overlap = (
+                    _level_overlap(internal_high, pl.col("ob_low"), pl.col("ob_high"))
+                    | _level_overlap(internal_low, pl.col("ob_low"), pl.col("ob_high"))
+                    if has_ob
+                    else pl.lit(None).cast(pl.Boolean)
+                )
+                zmf_overlap = (
+                    _level_overlap(internal_high, pl.col("zmf_zone_lo"), pl.col("zmf_zone_hi"))
+                    | _level_overlap(internal_low, pl.col("zmf_zone_lo"), pl.col("zmf_zone_hi"))
+                    if has_zmf
+                    else pl.lit(None).cast(pl.Boolean)
+                )
+
+                if overlap_family == "fvg":
+                    overlap_flag = fvg_overlap
+                elif overlap_family == "ob":
+                    overlap_flag = ob_overlap
+                elif overlap_family == "zmf_zone":
+                    overlap_flag = zmf_overlap
+                elif overlap_family == "any":
+                    overlap_flag = pl.any_horizontal(
+                        [expr for expr in (fvg_overlap, ob_overlap, zmf_overlap) if expr is not None]
+                    )
+                else:
+                    overlap_flag = pl.lit(None).cast(pl.Boolean)
+
+                out = out.with_columns(
+                    fvg_overlap.alias("internal_liq_fvg_overlap_flag"),
+                    overlap_flag.alias("internal_liq_overlap_flag"),
+                    pl.lit(overlap_family).alias("internal_liq_overlap_family_used"),
+                )
 
         if not micro_df.is_empty():
             micro_tf = micro_df.filter(pl.col("anchor_tf") == pl.lit(tf_str))
@@ -324,12 +460,24 @@ def build_feature_frame(
                         (pl.col("_ofi_sign") != pl.col("_ofi_sign").shift(1).over(by_micro))
                         & (pl.col("_ofi_sign") != 0)
                         & (pl.col("_ofi_sign").shift(1).over(by_micro) != 0)
-                    ).alias("internal_liq_ofi_flip_flag"),
+                    ).alias("internal_liq_ofi_flip_event"),
                     (
                         (pl.col("_agg_sign") != pl.col("_agg_sign").shift(1).over(by_micro))
                         & (pl.col("_agg_sign") != 0)
                         & (pl.col("_agg_sign").shift(1).over(by_micro) != 0)
-                    ).alias("internal_liq_agg_flip_flag"),
+                    ).alias("internal_liq_agg_flip_event"),
+                )
+                micro_tf = micro_tf.with_columns(
+                    pl.col("internal_liq_ofi_flip_event")
+                    .cast(pl.Int64)
+                    .rolling_sum(window_size=micro_window, min_periods=1)
+                    .over(by_micro)
+                    .alias("internal_liq_ofi_flip_count_L"),
+                    pl.col("internal_liq_agg_flip_event")
+                    .cast(pl.Int64)
+                    .rolling_sum(window_size=micro_window, min_periods=1)
+                    .over(by_micro)
+                    .alias("internal_liq_agg_flip_count_L"),
                 )
                 intensity_mean = pl.col("intensity").rolling_mean(
                     window_size=micro_window, min_periods=micro_window
@@ -340,17 +488,56 @@ def build_feature_frame(
                 intensity_z = safe_div(pl.col("intensity") - intensity_mean, intensity_std, default=0.0).alias(
                     "internal_liq_intensity_z"
                 )
-                micro_tf = micro_tf.with_columns(intensity_z).with_columns(
+                micro_tf = micro_tf.with_columns(intensity_z)
+                micro_tf = micro_tf.with_columns(
                     (pl.col("internal_liq_intensity_z").abs() >= pl.lit(micro_intensity_cut)).alias(
                         "internal_liq_intensity_spike_flag"
-                    )
+                    ),
+                    (pl.col("internal_liq_ofi_flip_count_L") >= pl.lit(ofi_flip_min_events)).alias(
+                        "internal_liq_ofi_flip_flag"
+                    ),
+                    (pl.col("internal_liq_agg_flip_count_L") >= pl.lit(agg_flip_min_events)).alias(
+                        "internal_liq_agg_flip_flag"
+                    ),
                 )
-                micro_tf = micro_tf.with_columns(
-                    (
+                if "spread" in micro_tf.columns:
+                    spread_mean = pl.col("spread").rolling_mean(
+                        window_size=micro_window, min_periods=micro_window
+                    ).over(by_micro)
+                    spread_std = pl.col("spread").rolling_std(
+                        window_size=micro_window, min_periods=micro_window
+                    ).over(by_micro)
+                    spread_z = safe_div(pl.col("spread") - spread_mean, spread_std, default=0.0).alias(
+                        "internal_liq_spread_z"
+                    )
+                    micro_tf = micro_tf.with_columns(spread_z).with_columns(
+                        (
+                            pl.when(pl.lit(spread_spike_z_cut) <= 0)
+                            .then(pl.lit(None).cast(pl.Boolean))
+                            .otherwise(pl.col("internal_liq_spread_z").abs() >= pl.lit(spread_spike_z_cut))
+                        ).alias("internal_liq_spread_spike_flag")
+                    )
+                else:
+                    micro_tf = micro_tf.with_columns(
+                        pl.lit(None).cast(pl.Float64).alias("internal_liq_spread_z"),
+                        pl.lit(None).cast(pl.Boolean).alias("internal_liq_spread_spike_flag"),
+                    )
+
+                if micro_confirm_mode == "intensity_only":
+                    confirm_expr = pl.col("internal_liq_intensity_spike_flag")
+                elif micro_confirm_mode == "ofi_flip":
+                    confirm_expr = pl.col("internal_liq_ofi_flip_flag")
+                elif micro_confirm_mode == "agg_flip":
+                    confirm_expr = pl.col("internal_liq_agg_flip_flag")
+                else:
+                    confirm_expr = (
                         pl.col("internal_liq_ofi_flip_flag")
                         | pl.col("internal_liq_agg_flip_flag")
                         | pl.col("internal_liq_intensity_spike_flag")
-                    ).alias("internal_liq_micro_confirm_flag"),
+                    )
+
+                micro_tf = micro_tf.with_columns(
+                    confirm_expr.alias("internal_liq_micro_confirm_flag"),
                     pl.lit("microstructure_flow").alias("internal_liq_micro_source_used"),
                 ).select(
                     "instrument",
@@ -358,22 +545,42 @@ def build_feature_frame(
                     "anchor_ts",
                     "internal_liq_micro_confirm_flag",
                     "internal_liq_ofi_flip_flag",
+                    "internal_liq_ofi_flip_count_L",
                     "internal_liq_agg_flip_flag",
+                    "internal_liq_agg_flip_count_L",
                     "internal_liq_intensity_spike_flag",
                     "internal_liq_intensity_z",
+                    "internal_liq_spread_z",
+                    "internal_liq_spread_spike_flag",
                     "internal_liq_micro_source_used",
                 )
                 out = out.join(micro_tf, on=["instrument", "anchor_tf", "anchor_ts"], how="left")
+
+        if "internal_liq_overlap_flag" not in out.columns:
+            out = out.with_columns(
+                pl.lit(None).cast(pl.Boolean).alias("internal_liq_overlap_flag"),
+                pl.lit(overlap_family).alias("internal_liq_overlap_family_used"),
+            )
 
         if "internal_liq_micro_confirm_flag" not in out.columns:
             out = out.with_columns(
                 pl.lit(None).cast(pl.Boolean).alias("internal_liq_micro_confirm_flag"),
                 pl.lit(None).cast(pl.Boolean).alias("internal_liq_ofi_flip_flag"),
+                pl.lit(None).cast(pl.Int64).alias("internal_liq_ofi_flip_count_L"),
                 pl.lit(None).cast(pl.Boolean).alias("internal_liq_agg_flip_flag"),
+                pl.lit(None).cast(pl.Int64).alias("internal_liq_agg_flip_count_L"),
                 pl.lit(None).cast(pl.Boolean).alias("internal_liq_intensity_spike_flag"),
                 pl.lit(None).cast(pl.Float64).alias("internal_liq_intensity_z"),
+                pl.lit(None).cast(pl.Float64).alias("internal_liq_spread_z"),
+                pl.lit(None).cast(pl.Boolean).alias("internal_liq_spread_spike_flag"),
                 pl.lit("none").alias("internal_liq_micro_source_used"),
             )
+        out = out.with_columns(
+            pl.when(pl.col("internal_liq_micro_near_level_flag").is_not_null())
+            .then(pl.col("internal_liq_micro_confirm_flag") & pl.col("internal_liq_micro_near_level_flag"))
+            .otherwise(pl.col("internal_liq_micro_confirm_flag"))
+            .alias("internal_liq_micro_confirm_flag")
+        )
 
         out_frames.append(
             out.select(
@@ -390,11 +597,18 @@ def build_feature_frame(
                 "internal_liq_reason_code",
                 "internal_liq_source_used",
                 "internal_liq_fvg_overlap_flag",
+                "internal_liq_overlap_flag",
+                "internal_liq_overlap_family_used",
+                "internal_liq_micro_near_level_flag",
                 "internal_liq_micro_confirm_flag",
                 "internal_liq_ofi_flip_flag",
+                "internal_liq_ofi_flip_count_L",
                 "internal_liq_agg_flip_flag",
+                "internal_liq_agg_flip_count_L",
                 "internal_liq_intensity_spike_flag",
                 "internal_liq_intensity_z",
+                "internal_liq_spread_z",
+                "internal_liq_spread_spike_flag",
                 "internal_liq_micro_source_used",
             )
         )
