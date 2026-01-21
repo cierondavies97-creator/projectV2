@@ -181,15 +181,26 @@ def build_feature_frame(
 
         df = df.with_columns(
             pl.col("_bucket").cast(pl.Utf8).alias("unsup_regime_id"),
-            pl.col("_vol_z").abs().clip(0.0, 3.0).alias("unsup_regime_confidence"),
+            (
+                (pl.col("_vol_z").abs() / pl.lit(max(conf_temp, 1e-6)))
+                .clip(0.0, 1.0)
+                .alias("_conf_raw")
+            ),
+        )
+        df = df.with_columns(
+            pl.col("_conf_raw").alias("unsup_regime_confidence"),
+            (pl.lit(1.0) - pl.col("_conf_raw")).alias("unsup_entropy"),
+            (pl.col("_conf_raw") < pl.lit(min_confidence)).alias("unsup_outlier_flag"),
             pl.lit(str(fam_cfg.get("unsup_method", "kmeans"))).alias("unsup_method_used"),
             pl.lit(str(fam_cfg.get("unsup_feature_set_id", "windows_core_v1"))).alias("unsup_feature_set_used"),
             pl.lit(None).cast(pl.Utf8).alias("unsup_model_id"),
             pl.lit(None).cast(pl.Datetime("us")).alias("unsup_fit_ts"),
             pl.lit(None).cast(pl.Float64).alias("unsup_distance_to_centroid"),
             pl.lit(None).cast(pl.Float64).alias("unsup_logprob"),
-            pl.lit(None).cast(pl.Float64).alias("unsup_entropy"),
-            pl.lit(None).cast(pl.Boolean).alias("unsup_outlier_flag"),
+        )
+        df = df.with_columns(
+            (pl.col("unsup_entropy") >= pl.lit(entropy_high_cut)).alias("unsup_outlier_flag")
+            | pl.col("unsup_outlier_flag")
         )
 
         out_frames.append(
