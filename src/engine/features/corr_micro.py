@@ -4,24 +4,49 @@ import logging
 
 import polars as pl
 
+from collections.abc import Mapping
+
 from engine.features import FeatureBuildContext
-from engine.features._shared import safe_div
+from engine.features._shared import conform_to_registry, safe_div
 
 log = logging.getLogger(__name__)
 
 
-def _empty_keyed_frame() -> pl.DataFrame:
+def _empty_keyed_frame(registry_entry: Mapping[str, object] | None) -> pl.DataFrame:
+    if registry_entry and isinstance(registry_entry, Mapping):
+        columns = registry_entry.get("columns")
+        if isinstance(columns, Mapping) and columns:
+            return pl.DataFrame({col: pl.Series([], dtype=pl.Null) for col in columns})
     return pl.DataFrame(
         {
             "instrument": pl.Series([], dtype=pl.Utf8),
             "ts": pl.Series([], dtype=pl.Datetime("us")),
-            "corr_dxy": pl.Series([], dtype=pl.Float64),
-            "corr_index_major": pl.Series([], dtype=pl.Float64),
-            "corr_oil": pl.Series([], dtype=pl.Float64),
-            "micro_corr_regime": pl.Series([], dtype=pl.Utf8),
-            "corr_cluster_id": pl.Series([], dtype=pl.Utf8),
         }
     )
+
+
+def _base_keys_from_candles(candles: pl.DataFrame) -> pl.DataFrame:
+    if candles is None or candles.is_empty():
+        return pl.DataFrame()
+    if not {"instrument", "ts"}.issubset(set(candles.columns)):
+        return pl.DataFrame()
+    return (
+        candles.select(
+            pl.col("instrument").cast(pl.Utf8),
+            pl.col("ts").cast(pl.Datetime("us")),
+        )
+        .drop_nulls(["instrument", "ts"])
+        .unique()
+        .sort(["instrument", "ts"])
+    )
+
+
+def _merge_cfg(ctx: FeatureBuildContext, family_cfg: Mapping[str, object] | None) -> dict[str, object]:
+    auto_cfg = getattr(ctx, "features_auto_cfg", None) or {}
+    cfg = dict(auto_cfg.get("corr_micro", {}) if isinstance(auto_cfg, Mapping) else {})
+    if isinstance(family_cfg, Mapping):
+        cfg.update(family_cfg)
+    return cfg
 
 
 def build_feature_frame(
@@ -30,6 +55,8 @@ def build_feature_frame(
     ticks: pl.DataFrame | None = None,
     macro: pl.DataFrame | None = None,
     external: pl.DataFrame | None = None,
+    family_cfg: Mapping[str, object] | None = None,
+    registry_entry: Mapping[str, object] | None = None,
 ) -> pl.DataFrame:
     """
     Micro correlation features using rolling correlation vs a cluster mean return.
@@ -39,19 +66,33 @@ def build_feature_frame(
     """
     if candles is None or candles.is_empty():
         log.warning("corr_micro: candles empty; returning empty keyed frame")
-        return _empty_keyed_frame()
+        return _empty_keyed_frame(registry_entry)
 
     required = {"instrument", "ts", "close"}
     missing = sorted(required - set(candles.columns))
     if missing:
-        log.warning("corr_micro: missing columns=%s; returning empty keyed frame", missing)
-        return _empty_keyed_frame()
+        log.warning("corr_micro: missing columns=%s; returning null-filled frame", missing)
+        base = _base_keys_from_candles(candles)
+        if base.is_empty():
+            return _empty_keyed_frame(registry_entry)
+        out = conform_to_registry(
+            base,
+            registry_entry=registry_entry,
+            key_cols=["instrument", "ts"],
+            where="corr_micro",
+            allow_extra=False,
+        )
+        return out
 
-    auto_cfg = getattr(ctx, "features_auto_cfg", None) or {}
-    fam_cfg = dict(auto_cfg.get("corr_micro", {}) if isinstance(auto_cfg, dict) else {})
+    fam_cfg = _merge_cfg(ctx, family_cfg)
 
     window = max(5, int(fam_cfg.get("corr_window_bars", 50)))
+    min_periods = int(fam_cfg.get("corr_min_periods", max(10, window // 2)))
     strong_cut = float(fam_cfg.get("corr_strong_cut", 0.5))
+    clip_abs = float(fam_cfg.get("corr_clip_abs", 0.999))
+    stability_window = max(5, int(fam_cfg.get("corr_stability_window_bars", 200)))
+    flip_cut = float(fam_cfg.get("corr_flip_abs_delta_cut", 0.5))
+    unstable_cut = float(fam_cfg.get("corr_unstable_std_cut", 0.25))
 
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
@@ -67,7 +108,7 @@ def build_feature_frame(
         c = c.filter(pl.col("_tf").is_in([str(tf) for tf in anchor_tfs]))
 
     if c.is_empty():
-        return _empty_keyed_frame()
+        return _empty_keyed_frame(registry_entry)
 
     c = c.sort(["instrument", "ts"]).with_columns(
         pl.col("close").pct_change().over("instrument").alias("_ret"),
@@ -89,24 +130,77 @@ def build_feature_frame(
     std_mkt = pl.col("_market_ret").rolling_std(window_size=window, min_periods=window).over(by)
 
     cov = (mean_prod - (mean_ret * mean_mkt)).alias("_cov")
-    corr = safe_div(cov, std_ret * std_mkt, default=0.0).alias("corr_index_major")
+    corr_raw = safe_div(cov, std_ret * std_mkt, default=None)
+    corr = corr_raw.clip(-clip_abs, clip_abs).alias("corr_index_major")
 
-    df = c.with_columns(cov, corr).with_columns(
+    df = c.with_columns(cov, corr)
+    df = df.with_columns(
         pl.col("corr_index_major").alias("corr_dxy"),
         pl.col("corr_index_major").alias("corr_oil"),
-        pl.when(pl.col("corr_index_major") >= pl.lit(strong_cut))
+        pl.lit("MARKET").alias("corr_ref1_id"),
+        pl.col("corr_index_major").alias("corr_ref1"),
+        pl.lit(None).cast(pl.Utf8).alias("corr_ref2_id"),
+        pl.lit(None).cast(pl.Float64).alias("corr_ref2"),
+        pl.lit(None).cast(pl.Utf8).alias("corr_ref3_id"),
+        pl.lit(None).cast(pl.Float64).alias("corr_ref3"),
+    )
+    df = df.with_columns(
+        pl.when(pl.col("corr_ref1").is_null())
+        .then(pl.lit(None).cast(pl.Utf8))
+        .when(pl.col("corr_ref1") >= 0)
+        .then(pl.lit("pos"))
+        .otherwise(pl.lit("neg"))
+        .alias("micro_corr_sign"),
+        pl.col("corr_ref1").abs().clip(0.0, 1.0).alias("micro_corr_strength"),
+    )
+    corr_count = (
+        pl.col("_ret")
+        .rolling_count(window_size=window, min_periods=1)
+        .over("instrument")
+        .alias("_corr_count")
+    )
+    df = df.with_columns(corr_count)
+    df = df.with_columns(
+        pl.when(pl.col("_corr_count") >= pl.lit(min_periods))
+        .then(pl.lit(1.0))
+        .otherwise(pl.lit(0.0))
+        .alias("micro_corr_confidence")
+    )
+    corr_std = (
+        pl.col("corr_ref1")
+        .rolling_std(window_size=stability_window, min_periods=min_periods)
+        .over("instrument")
+        .alias("micro_corr_std")
+    )
+    df = df.with_columns(corr_std)
+    df = df.with_columns(
+        (pl.col("micro_corr_std") >= pl.lit(unstable_cut)).alias("micro_corr_unstable_flag"),
+        (
+            (pl.col("corr_ref1") * pl.col("corr_ref1").shift(1).over("instrument") < 0)
+            | ((pl.col("corr_ref1") - pl.col("corr_ref1").shift(1).over("instrument")).abs() >= pl.lit(flip_cut))
+        ).alias("micro_corr_flip_flag"),
+    )
+    df = df.with_columns(
+        pl.when(pl.col("corr_ref1") >= pl.lit(strong_cut))
         .then(pl.lit("aligned"))
-        .when(pl.col("corr_index_major") <= pl.lit(-strong_cut))
+        .when(pl.col("corr_ref1") <= pl.lit(-strong_cut))
         .then(pl.lit("divergent"))
         .otherwise(pl.lit("unstable"))
-        .alias("micro_corr_regime"),
-    ).with_columns(
+        .alias("micro_corr_regime")
+    )
+    df = df.with_columns(
         pl.when(pl.col("micro_corr_regime") == pl.lit("aligned"))
         .then(pl.lit("cluster_pos"))
         .when(pl.col("micro_corr_regime") == pl.lit("divergent"))
         .then(pl.lit("cluster_neg"))
         .otherwise(pl.lit("cluster_neutral"))
         .alias("corr_cluster_id"),
+        pl.col("corr_ref1").abs().alias("corr_ref1_xcorr_max"),
+        pl.lit(0).cast(pl.Int64).alias("corr_ref1_xcorr_lag_bars"),
+        pl.lit(None).cast(pl.Float64).alias("corr_vol_ref1"),
+        pl.lit(None).cast(pl.Float64).alias("corr_vol_ref2"),
+        pl.lit(None).cast(pl.Float64).alias("corr_vol_ref3"),
+        pl.lit(None).cast(pl.Utf8).alias("corr_topk_neighbors_json"),
     )
 
     out = df.select(
@@ -117,6 +211,32 @@ def build_feature_frame(
         "corr_oil",
         "micro_corr_regime",
         "corr_cluster_id",
+        "corr_ref1_id",
+        "corr_ref1",
+        "corr_ref2_id",
+        "corr_ref2",
+        "corr_ref3_id",
+        "corr_ref3",
+        "micro_corr_sign",
+        "micro_corr_strength",
+        "micro_corr_confidence",
+        "micro_corr_std",
+        "micro_corr_unstable_flag",
+        "micro_corr_flip_flag",
+        "corr_ref1_xcorr_max",
+        "corr_ref1_xcorr_lag_bars",
+        "corr_vol_ref1",
+        "corr_vol_ref2",
+        "corr_vol_ref3",
+        "corr_topk_neighbors_json",
+    )
+
+    out = conform_to_registry(
+        out,
+        registry_entry=registry_entry,
+        key_cols=["instrument", "ts"],
+        where="corr_micro",
+        allow_extra=False,
     )
 
     log.info("corr_micro: built rows=%d window=%d", out.height, window)
