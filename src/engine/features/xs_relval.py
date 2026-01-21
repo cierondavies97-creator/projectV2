@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import logging
 
-import polars as plhttps://github.com/cierondavies97-creator/projectV2/pulls
+import polars as pl
 
 from engine.features import FeatureBuildContext
-from engine.features._shared import safe_div
+from engine.features._shared import conform_to_registry, safe_div
 
 log = logging.getLogger(__name__)
 
 
-def _empty_keyed_frame() -> pl.DataFrame:
+def _empty_keyed_frame(registry_entry: dict | None) -> pl.DataFrame:
+    if registry_entry and isinstance(registry_entry, dict):
+        columns = registry_entry.get("columns")
+        if isinstance(columns, dict) and columns:
+            return pl.DataFrame({col: pl.Series([], dtype=pl.Null) for col in columns})
     return pl.DataFrame(
         {
             "instrument": pl.Series([], dtype=pl.Utf8),
@@ -23,12 +27,29 @@ def _empty_keyed_frame() -> pl.DataFrame:
     )
 
 
+def _base_keys_from_candles(candles: pl.DataFrame) -> pl.DataFrame:
+    if candles is None or candles.is_empty():
+        return pl.DataFrame()
+    if not {"instrument", "ts"}.issubset(set(candles.columns)):
+        return pl.DataFrame()
+    return (
+        candles.select(
+            pl.col("instrument").cast(pl.Utf8),
+            pl.col("ts").cast(pl.Datetime("us")),
+        )
+        .drop_nulls(["instrument", "ts"])
+        .unique()
+        .sort(["instrument", "ts"])
+    )
+
+
 def build_feature_frame(
     ctx: FeatureBuildContext,
     candles: pl.DataFrame,
     ticks: pl.DataFrame | None = None,
     macro: pl.DataFrame | None = None,
     external: pl.DataFrame | None = None,
+    registry_entry: dict | None = None,
 ) -> pl.DataFrame:
     """
     Cross-sectional relative value features from per-bar returns.
@@ -38,13 +59,28 @@ def build_feature_frame(
     """
     if candles is None or candles.is_empty():
         log.warning("xs_relval: candles empty; returning empty keyed frame")
-        return _empty_keyed_frame()
+        return _empty_keyed_frame(registry_entry)
 
     required = {"instrument", "ts", "close"}
     missing = sorted(required - set(candles.columns))
     if missing:
-        log.warning("xs_relval: missing columns=%s; returning empty keyed frame", missing)
-        return _empty_keyed_frame()
+        log.warning("xs_relval: missing columns=%s; returning null-filled frame", missing)
+        base = _base_keys_from_candles(candles)
+        if base.is_empty():
+            return _empty_keyed_frame(registry_entry)
+        out = base.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("xs_relval_spread_level"),
+            pl.lit(None).cast(pl.Float64).alias("xs_relval_spread_zscore"),
+            pl.lit(None).cast(pl.Float64).alias("xs_relval_carry_rank"),
+            pl.lit(None).cast(pl.Float64).alias("xs_relval_momo_rank"),
+        )
+        return conform_to_registry(
+            out,
+            registry_entry=registry_entry,
+            key_cols=["instrument", "ts"],
+            where="xs_relval",
+            allow_extra=False,
+        )
 
     cluster = getattr(ctx, "cluster", None)
     anchor_tfs = getattr(cluster, "anchor_tfs", None) or []
@@ -60,7 +96,7 @@ def build_feature_frame(
         c = c.filter(pl.col("_tf").is_in([str(tf) for tf in anchor_tfs]))
 
     if c.is_empty():
-        return _empty_keyed_frame()
+        return _empty_keyed_frame(registry_entry)
 
     c = c.sort(["instrument", "ts"]).with_columns(
         pl.col("close").pct_change().over("instrument").alias("_ret"),
@@ -93,6 +129,14 @@ def build_feature_frame(
         "xs_relval_spread_zscore",
         "xs_relval_carry_rank",
         "xs_relval_momo_rank",
+    )
+
+    out = conform_to_registry(
+        out,
+        registry_entry=registry_entry,
+        key_cols=["instrument", "ts"],
+        where="xs_relval",
+        allow_extra=False,
     )
 
     log.info("xs_relval: built rows=%d", out.height)

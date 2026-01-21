@@ -1932,6 +1932,79 @@ dealing_range_state:
     impact_policy_id:     { role: feature, dtype: string }
     options_policy_id:    { role: feature, dtype: string }
 
+
+internal_liquidity:
+  table: "data/windows"
+  enabled: false
+  maturity: "stub"
+  description: "Internal liquidity levels and counts inside recent ranges; deterministic, range-interior proxy with optional microstructure augmentation."
+  primary_key: [instrument, anchor_tf, anchor_ts]
+
+  threshold_keys:
+    - internal_liq_lookback_bars
+    - internal_liq_range_method
+    - internal_liq_range_min_atr
+    - internal_liq_range_max_atr
+    - internal_liq_interior_buffer_mode
+    - internal_liq_interior_buffer_ticks
+    - internal_liq_atr_window
+    - internal_liq_edge_atr_mult
+    - internal_liq_min_count
+    - internal_liq_pivot_left_bars
+    - internal_liq_pivot_right_bars
+    - internal_liq_pivot_prominence_atr_min
+    - internal_liq_level_merge_mode
+    - internal_liq_level_merge_ticks
+    - internal_liq_level_merge_atr_mult
+    - internal_liq_max_levels_per_side
+    - internal_liq_level_rank_method
+    - internal_liq_touch_mode
+    - internal_liq_touch_tolerance_mode
+    - internal_liq_touch_tolerance_ticks
+    - internal_liq_touch_tolerance_atr_mult
+    - internal_liq_min_bars_between_touches
+    - internal_liq_nearest_dist_atr_max
+    - internal_liq_require_both_sides
+    - internal_liq_source
+    - internal_liq_micro_window_bars
+    - internal_liq_micro_intensity_z_cut
+    - internal_liq_micro_confirm_mode
+    - internal_liq_ofi_flip_min_events
+    - internal_liq_agg_flip_min_events
+    - internal_liq_micro_event_band_ticks
+    - internal_liq_spread_spike_z_cut
+    - internal_liq_overlap_family
+    - internal_liq_overlap_max_dist_atr
+
+  columns:
+    instrument: { role: key, dtype: string }
+    anchor_tf:  { role: key, dtype: string }
+    anchor_ts:  { role: key, dtype: timestamp }
+
+    internal_liq_high_count_L:   { role: feature, dtype: int }
+    internal_liq_low_count_L:    { role: feature, dtype: int }
+    internal_liq_level_high:     { role: feature, dtype: double }
+    internal_liq_level_low:      { role: feature, dtype: double }
+    internal_liq_nearest_side:   { role: feature, dtype: string }
+    internal_liq_nearest_dist_atr: { role: feature, dtype: double }
+    internal_liq_flag:           { role: feature, dtype: boolean }
+    internal_liq_reason_code:    { role: feature, dtype: string }
+    internal_liq_source_used:    { role: feature, dtype: string }
+    internal_liq_fvg_overlap_flag: { role: feature, dtype: boolean }
+    internal_liq_overlap_flag: { role: feature, dtype: boolean }
+    internal_liq_overlap_family_used: { role: feature, dtype: string }
+    internal_liq_micro_near_level_flag: { role: feature, dtype: boolean }
+    internal_liq_micro_confirm_flag: { role: feature, dtype: boolean }
+    internal_liq_ofi_flip_flag: { role: feature, dtype: boolean }
+    internal_liq_ofi_flip_count_L: { role: feature, dtype: int }
+    internal_liq_agg_flip_flag: { role: feature, dtype: boolean }
+    internal_liq_agg_flip_count_L: { role: feature, dtype: int }
+    internal_liq_intensity_spike_flag: { role: feature, dtype: boolean }
+    internal_liq_intensity_z: { role: feature, dtype: double }
+    internal_liq_spread_z: { role: feature, dtype: double }
+    internal_liq_spread_spike_flag: { role: feature, dtype: boolean }
+    internal_liq_micro_source_used: { role: feature, dtype: string }
+
 microstructure_flow:
   table: "data/features"
   enabled: false
