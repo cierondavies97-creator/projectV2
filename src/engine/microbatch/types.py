@@ -16,6 +16,7 @@ CANONICAL_TABLE_KEYS = (
     "macro",
     # Feature / memory model tables
     "features",
+    "market_events",
     "zones_state",
     "pcr_a",
     "windows",
@@ -59,6 +60,7 @@ class BatchState:
 
         Feature / memory model tables:
           - 'features'             : feature frames per (instrument, anchor_tf)
+          - 'market_events'        : canonical event stream (auditability)
           - 'zones_state'          : ZMF + VP state
           - 'pcr_a'                : PCrA microstructure table
           - 'windows'              : anchor-time windows for this run_id/day/cluster

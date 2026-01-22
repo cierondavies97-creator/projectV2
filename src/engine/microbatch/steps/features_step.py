@@ -19,6 +19,7 @@ from engine.core.config_models import (
 )
 from engine.core.timegrid import validate_anchor_grid
 from engine.data.features import write_features_for_instrument_tf_day
+from engine.data.market_events import write_market_events_for_instrument_tf_day
 from engine.data.pcra import write_pcra_for_instrument_tf_day
 from engine.data.zones_state import write_zones_state_for_instrument_tf_day
 from engine.features import FeatureBuildContext
@@ -47,6 +48,13 @@ class _TableSpec:
 FEATURES_SPEC = _TableSpec(
     table_name="data/features",
     key_cols=["instrument", "anchor_tf", "ts"],
+    ts_col="ts",
+    anchor_tf_col="anchor_tf",
+)
+
+MARKET_EVENTS_SPEC = _TableSpec(
+    table_name="data/market_events",
+    key_cols=["instrument", "anchor_tf", "ts", "event_type"],
     ts_col="ts",
     anchor_tf_col="anchor_tf",
 )
@@ -386,6 +394,7 @@ def run(state: BatchState) -> BatchState:
 
     Outputs in BatchState:
       - 'features'
+      - 'market_events'
       - 'zones_state'
       - 'pcr_a'
     """
@@ -393,6 +402,7 @@ def run(state: BatchState) -> BatchState:
         step_name="features_step",
         writes=(
             ContractWrite(table_key="features", writer_fn="write_features_for_instrument_tf_day"),
+            ContractWrite(table_key="market_events", writer_fn="write_market_events_for_instrument_tf_day"),
             ContractWrite(table_key="zones_state", writer_fn="write_zones_state_for_instrument_tf_day"),
             ContractWrite(table_key="pcr_a", writer_fn="write_pcra_for_instrument_tf_day"),
         ),
@@ -408,6 +418,7 @@ def run(state: BatchState) -> BatchState:
     registry = load_features_registry()
 
     features_families = families_for_table(registry, table=FEATURES_SPEC.table_name)
+    market_events_families = families_for_table(registry, table=MARKET_EVENTS_SPEC.table_name)
     zones_families = families_for_table(registry, table=ZONES_STATE_SPEC.table_name)
     pcra_families = families_for_table(registry, table=PCRA_SPEC.table_name)
 
@@ -420,6 +431,16 @@ def run(state: BatchState) -> BatchState:
         macro=macro,
         external=external,
         spec=FEATURES_SPEC,
+    )
+    market_events_df = _build_table_for_cluster(
+        state=state,
+        plan=plan,
+        families=market_events_families,
+        candles=candles,
+        ticks=ticks,
+        macro=macro,
+        external=external,
+        spec=MARKET_EVENTS_SPEC,
     )
     zones_state_df = _build_table_for_cluster(
         state=state,
@@ -443,12 +464,14 @@ def run(state: BatchState) -> BatchState:
     )
 
     state.set("features", features_df)
+    state.set("market_events", market_events_df)
     state.set("zones_state", zones_state_df)
     state.set("pcr_a", pcra_df)
 
     logger.info(
-        "features_step.run: features_rows=%d zones_state_rows=%d pcra_rows=%d",
+        "features_step.run: features_rows=%d market_events_rows=%d zones_state_rows=%d pcra_rows=%d",
         features_df.height if features_df is not None else 0,
+        market_events_df.height if market_events_df is not None else 0,
         zones_state_df.height if zones_state_df is not None else 0,
         pcra_df.height if pcra_df is not None else 0,
     )
@@ -477,7 +500,30 @@ def run(state: BatchState) -> BatchState:
                     sandbox=False,
                 )
 
-# Persist: data/zones_state
+    # Persist: data/market_events
+    if market_events_df is not None and not market_events_df.is_empty():
+        for (instrument, anchor_tf), grp in market_events_df.group_by(["instrument", "anchor_tf"], maintain_order=True):
+            write_market_events_for_instrument_tf_day(
+                ctx=state.ctx,
+                df=grp,
+                instrument=str(instrument),
+                anchor_tf=str(anchor_tf),
+                trading_day=state.key.trading_day,
+                sandbox=False,
+            )
+    else:
+        for instrument in plan.instruments:
+            for anchor_tf in plan.anchor_tfs:
+                write_market_events_for_instrument_tf_day(
+                    ctx=state.ctx,
+                    df=pl.DataFrame(),
+                    instrument=str(instrument),
+                    anchor_tf=str(anchor_tf),
+                    trading_day=state.key.trading_day,
+                    sandbox=False,
+                )
+
+    # Persist: data/zones_state
     if zones_state_df is not None and not zones_state_df.is_empty():
         for (instrument, anchor_tf), grp in zones_state_df.group_by(["instrument", "anchor_tf"], maintain_order=True):
             write_zones_state_for_instrument_tf_day(
@@ -501,7 +547,7 @@ def run(state: BatchState) -> BatchState:
                     sandbox=False,
                 )
 
-# Persist: data/pcr_a
+    # Persist: data/pcr_a
     if pcra_df is not None and not pcra_df.is_empty():
         for (instrument, anchor_tf), grp in pcra_df.group_by(["instrument", "anchor_tf"], maintain_order=True):
             write_pcra_for_instrument_tf_day(

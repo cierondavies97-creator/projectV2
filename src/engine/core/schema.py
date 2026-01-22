@@ -866,6 +866,12 @@ FEATURES_SCHEMA = TableSchema(
     columns=_merge_columns(_BASE_META_COLS, _registry_cols('data/features'), _strip_registry_overlap('data/features', FEATURES_COLUMNS)),
 )
 
+MARKET_EVENTS_SCHEMA = TableSchema(
+    name="data/market_events",
+    partition_cols=["run_id", "instrument", "anchor_tf", "dt"],
+    columns=_merge_columns(_BASE_META_COLS, _registry_cols('data/market_events')),
+)
+
 FEATURES_CORR_COLUMNS: Dict[str, str] = {
     'snapshot_id': 'string',
     'run_id': 'string',
@@ -1162,6 +1168,7 @@ TABLE_SCHEMAS: dict[str, TableSchema] = {
     "principles_context": PRINCIPLES_CONTEXT_SCHEMA,
     "trade_clusters": TRADE_CLUSTERS_SCHEMA,
     "features": FEATURES_SCHEMA,
+    "market_events": MARKET_EVENTS_SCHEMA,
     "features_corr": FEATURES_CORR_SCHEMA,
     "macro": MACRO_SCHEMA,
     "zones_state": ZONES_STATE_SCHEMA,
