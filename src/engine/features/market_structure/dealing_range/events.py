@@ -69,8 +69,8 @@ def compute_event_flags(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> pl.Dat
         .alias("_tests_count")
     )
 
-    pierce_low = (pl.col("dr_low") - pl.col("low")).alias("_pierce_low")
-    pierce_high = (pl.col("high") - pl.col("dr_high")).alias("_pierce_high")
+    pierce_low_raw = (pl.col("dr_low") - pl.col("low")).alias("_pierce_low")
+    pierce_high_raw = (pl.col("high") - pl.col("dr_high")).alias("_pierce_high")
     pierce_low = pl.when(pl.col("_pierce_low") < 0).then(0.0).otherwise(pl.col("_pierce_low")).alias("_pierce_low")
     pierce_high = pl.when(pl.col("_pierce_high") < 0).then(0.0).otherwise(pl.col("_pierce_high")).alias("_pierce_high")
 
@@ -96,9 +96,11 @@ def compute_event_flags(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> pl.Dat
         .with_columns(inside_ratio)
         .with_columns(test_high, test_low)
         .with_columns(test_high_count, test_low_count, tests_count)
+        .with_columns(pierce_low_raw, pierce_high_raw)
         .with_columns(pierce_low, pierce_high)
         .with_columns(probe_low, probe_high)
         .with_columns(reclaim_from_low, reclaim_from_high)
         .with_columns(outside_up, outside_dn)
-        .with_columns(dist_mid, trend_dist, trend_far)
+        .with_columns(dist_mid, trend_dist)
+        .with_columns(trend_far)
     )

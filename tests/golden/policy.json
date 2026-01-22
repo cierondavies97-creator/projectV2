@@ -1,0 +1,23 @@
+{
+  "golden_tables": [
+    "windows",
+    "features"
+  ],
+  "drop_identity_cols": [
+    "run_id"
+  ],
+  "pk_cols": {
+    "windows": ["instrument", "anchor_tf", "anchor_ts", "tf_entry"],
+    "features": ["instrument", "ts"],
+    "decisions_hypotheses": ["instrument", "trade_id", "dt"],
+    "decisions_critic": ["instrument", "trade_id", "dt"],
+    "decisions_pretrade": ["instrument", "trade_id", "dt"],
+    "decisions_gatekeeper": ["instrument", "trade_id", "dt"],
+    "decisions_portfolio": ["instrument", "trade_id", "dt"],
+    "trade_paths": ["instrument", "trade_id", "dt"],
+    "brackets": ["instrument", "trade_id", "dt"],
+    "orders": ["instrument", "trade_id", "dt"],
+    "fills": ["instrument", "trade_id", "dt"],
+    "reports": ["dt"]
+  }
+}

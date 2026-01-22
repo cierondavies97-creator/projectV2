@@ -835,6 +835,10 @@ store fixture OHLCV segments + expected phase labels per anchor_tf
 
 run in CI; phase labeling must not drift unintentionally.
 
+Golden fixtures policy (system-wide)
+
+Use golden fixtures for deterministic, contract-critical artifacts across the engine (and system interfaces) where drift would break auditability or downstream correctness. Prioritize state machines, context selectors, and schema-critical outputs; allow explicit nulls when inputs/timeframes are absent. For non-deterministic or research-lane artifacts, prefer schema/contract checks, bounds/invariant assertions, and reproducibility metadata instead of brittle golden snapshots.
+
 Implementation skeleton (what you actually build)
 
 dealing_range/events.py

@@ -1,0 +1,35 @@
+{
+  "cluster_id": "metals",
+  "policy_path": "tests/golden/policy.json",
+  "run_id": "golden_bless",
+  "snapshot_id": "dev_retail_v1",
+  "tables": {
+    "features": {
+      "content_hash": "679b56de3ee65be7d0fe0c83e326284491d3fdda9e0562d673cb7b52f1f0a9d2",
+      "dataset": "features",
+      "invariants": [],
+      "pk_cols": [
+        "instrument",
+        "ts"
+      ],
+      "row_count": 288,
+      "schema_fingerprint": "270d23e77d1782efb20d5326f35779c093eccfd6e3c2e3c6d8b1391fb9911e6b",
+      "table_key": "features"
+    },
+    "windows": {
+      "content_hash": "55b7fe8ca62217842492ddacd27023ae0b7ed512c7ab0daaecb0b1c9a8a349c6",
+      "dataset": "windows",
+      "invariants": [],
+      "pk_cols": [
+        "instrument",
+        "anchor_tf",
+        "anchor_ts",
+        "tf_entry"
+      ],
+      "row_count": 288,
+      "schema_fingerprint": "334d12ee9924f519dc964084321f17b75b8bcef011ae4ef13887d851cc0f4b19",
+      "table_key": "windows"
+    }
+  },
+  "trading_day": "2025-01-02"
+}
