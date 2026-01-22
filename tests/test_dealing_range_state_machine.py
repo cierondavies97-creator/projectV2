@@ -110,3 +110,20 @@ def test_dealing_range_state_machine_golden_h1() -> None:
     phases = out.get_column("dr_phase").to_list()
 
     assert phases == [None, None, None, None, "B", "B"]
+
+
+def test_dealing_range_state_machine_allows_nulls_for_missing_tfs() -> None:
+    start = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
+    anchor_ts = [start + timedelta(minutes=5 * idx) for idx in range(3)]
+    windows = pl.DataFrame(
+        {
+            "instrument": ["GC", "GC", "GC"] * len(anchor_ts),
+            "anchor_tf": ["M1", "M5", "D1"] * len(anchor_ts),
+            "anchor_ts": anchor_ts * 3,
+        }
+    ).sort(["anchor_tf", "anchor_ts"])
+
+    out = fold_state_machine(windows, None).sort(["anchor_tf", "anchor_ts"])
+    assert set(out.get_column("anchor_tf").unique().to_list()) == {"M1", "M5", "D1"}
+    assert out.get_column("dr_phase").null_count() == out.height
+    assert out.get_column("dr_reason_code").null_count() == out.height
