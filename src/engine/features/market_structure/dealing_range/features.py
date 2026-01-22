@@ -53,5 +53,7 @@ def compute_range_descriptors(df: pl.DataFrame, *, cfg: Mapping[str, float]) -> 
     return (
         df.with_columns(tr)
         .with_columns(atr)
-        .with_columns(dr_high, dr_low, dr_width, dr_mid, dr_width_atr, range_position)
+        .with_columns(dr_high, dr_low)
+        .with_columns(dr_width, dr_mid)
+        .with_columns(dr_width_atr, range_position)
     )
