@@ -216,7 +216,7 @@ def _reduce_features_to_bar(features: pl.DataFrame) -> pl.DataFrame:
     if not non_keys:
         return d.unique(subset=keys).sort(keys)
 
-    d2 = d.group_by(keys).agg([pl.first(c).alias(c) for c in non_keys]).sort(keys)
+    d2 = d.group_by(keys, maintain_order=True).agg([pl.first(c).alias(c) for c in non_keys]).sort(keys)
     return d2
 
 
@@ -235,16 +235,22 @@ def _zones_context_from_zones_state(zones_state: pl.DataFrame) -> pl.DataFrame:
     if not {"instrument", "anchor_tf", "ts"}.issubset(set(zones_state.columns)):
         return pl.DataFrame()
 
+    sort_cols = ["instrument", "anchor_tf", "ts"]
+    select_cols = ["instrument", "anchor_tf", "ts", *zone_cols_present]
+    if "zone_id" in zones_state.columns:
+        sort_cols.append("zone_id")
+        select_cols.append("zone_id")
+
     zs = (
-        zones_state.select(["instrument", "anchor_tf", "ts", *zone_cols_present])
+        zones_state.select(select_cols)
         .with_columns(
             pl.col("instrument").cast(pl.Utf8, strict=False),
             pl.col("anchor_tf").cast(pl.Utf8, strict=False),
             pl.col("ts").cast(pl.Datetime("us"), strict=False),
             *[pl.col(c).cast(pl.Utf8, strict=False) for c in zone_cols_present],
         )
-        .sort(["instrument", "anchor_tf", "ts"])
-        .group_by(["instrument", "anchor_tf", "ts"])
+        .sort(sort_cols)
+        .group_by(["instrument", "anchor_tf", "ts"], maintain_order=True)
         .agg([pl.first(c).alias(c) for c in zone_cols_present])
         .rename({"ts": "anchor_ts"})
         .sort(["instrument", "anchor_tf", "anchor_ts"])

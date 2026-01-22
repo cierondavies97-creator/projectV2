@@ -296,6 +296,28 @@ def windows_dir(
     )
 
 
+def market_events_dir(
+    ctx: RunContext,
+    trading_day: date,
+    instrument: str,
+    anchor_tf: str,
+    *,
+    sandbox: bool = False,
+) -> Path:
+    """
+    data/market_events/run_id=<RUN_ID>/instrument=<INSTRUMENT>/anchor_tf=<ANCHOR_TF>/dt=<YYYY-MM-DD>/
+    """
+    root = data_root(ctx, sandbox=sandbox)
+    return (
+        root
+        / "market_events"
+        / _part("run_id", ctx.run_id)
+        / _part("instrument", instrument)
+        / _part("anchor_tf", anchor_tf)
+        / _part("dt", _fmt_dt(trading_day))
+    )
+
+
 def zones_state_dir(
     ctx: RunContext,
     trading_day: date,
@@ -571,6 +593,7 @@ __all__ = [
     "macro_dir",
     "features_dir",
     "windows_dir",
+    "market_events_dir",
     "zones_state_dir",
     "pcra_dir",
     "decisions_dir",

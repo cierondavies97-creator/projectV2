@@ -124,6 +124,17 @@ CONTRACT: dict[str, TableContract] = {
         mutators=("features_step",),
         notes="Deterministic features are persisted once per (instrument, anchor_tf, dt).",
     ),
+    "market_events": TableContract(
+        key="market_events",
+        dataset="market_events",
+        persisted_current=True,
+        persisted_target=True,
+        owner_step_current="features_step",
+        owner_step_target="features_step",
+        writer_fn="write_market_events_for_instrument_tf_day",
+        mutators=("features_step",),
+        notes="Deterministic event stream for auditability; persisted by features_step.",
+    ),
     "zones_state": TableContract(
         key="zones_state",
         dataset="zones_state",
